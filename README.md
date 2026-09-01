@@ -38,13 +38,16 @@ The generated page provides:
 - local **Copy JSFuck** and AEM1K-style **Copy invisible** exports for
   JavaScript;
 - an explicit **Run in sandbox** action for JavaScript and HTML;
-- a JSFuck-compatible **Run in parent scope** opt-in for JavaScript.
+- a JSFuck-compatible **Run in parent scope** opt-in for JavaScript;
+- an explicit `#r:` auto-run link for intentionally executable shares.
 
-Opening a link never runs its contents. Markdown HTML is treated as text, links
-are protocol-filtered, and parent-scope execution requires both checking its
-scope control and confirming the warning. The default runner remains an
-`allow-scripts` iframe with a unique origin and a network-blocking Content
-Security Policy. Stopping that runner destroys its document.
+Opening an ordinary `#PAYLOAD` link never runs its contents. Markdown HTML is
+treated as text and links are protocol-filtered. Checking the parent-scope
+control makes the Run action immediate, just as on JSFuck. A deliberately
+shared `#r:PAYLOAD` link selects that mode and runs JavaScript on load. The
+default runner remains an `allow-scripts` iframe with a unique origin and a
+network-blocking Content Security Policy. Stopping that runner destroys its
+document.
 
 ## Run locally
 

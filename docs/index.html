@@ -73,6 +73,7 @@
         <p id="result-warning" class="warning" hidden>This is a very long URL. The codec is valid, but a chat app, browser, or QR scanner may impose its own length limit.</p>
         <div class="result-actions">
           <button id="copy-link" class="primary" type="button">Copy link</button>
+          <button id="copy-run-link" class="auto-run-action" type="button" hidden>Copy auto-run link</button>
           <a id="open-link" class="button" target="_blank" rel="noopener">Open viewer ↗</a>
         </div>
         <figure id="qr-wrap" class="qr-wrap" hidden>
@@ -96,6 +97,10 @@
           </div>
           <button id="edit-source" class="button" type="button">Edit a copy</button>
         </div>
+        <aside class="scope-note">
+          <strong>NOTE</strong>
+          <p><b>Run in parent scope</b> executes shared JavaScript directly on ln.kr with access to this page, its URL, browser APIs, and ordinary network requests. It can replace the interface or navigate away. Leave it unchecked to use the isolated sandbox.</p>
+        </aside>
       </details>
 
       <div class="action-bar" aria-label="Document actions">
@@ -145,19 +150,6 @@
       <p class="hero-copy">Code, Markdown, notes, whitespace, line endings, and Unicode survive byte-for-byte. Repeated blocks collapse into references; the browser does everything.</p>
     </div>
     <p class="modal-copy">The payload stays in the URL fragment and is decoded locally. ln.kr retains ha.mr’s BigInt engine and its ASCII, QR, and emoji alphabets, then adds an exact code-and-text grammar above it.</p>
-  </dialog>
-
-  <dialog id="native-run-dialog" class="modal native-dialog" aria-labelledby="native-run-title">
-    <div class="modal-head">
-      <span class="eyebrow">Unisolated execution</span>
-      <button id="native-run-close" class="icon-button" type="button" aria-label="Cancel native execution">×</button>
-    </div>
-    <h2 id="native-run-title">Run this JavaScript on ln.kr itself?</h2>
-    <p class="modal-copy">Unlike the sandbox, this gives the shared code direct access to this page, its URL, browser APIs, and ordinary network requests. It can replace the interface or navigate away.</p>
-    <div class="modal-actions">
-      <button id="native-run-cancel" type="button">Cancel</button>
-      <button id="native-run-confirm" class="native-confirm" type="button">Run on page</button>
-    </div>
   </dialog>
 
   <footer>
