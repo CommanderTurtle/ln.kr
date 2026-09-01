@@ -21,6 +21,7 @@ const elements = {
   resultMeta: document.querySelector("#result-meta"),
   resultWarning: document.querySelector("#result-warning"),
   copyLink: document.querySelector("#copy-link"),
+  copyRunLink: document.querySelector("#copy-run-link"),
   openLink: document.querySelector("#open-link"),
   qrCanvas: document.querySelector("#qrcode"),
   qrWrap: document.querySelector("#qr-wrap"),
@@ -46,14 +47,11 @@ const elements = {
   runnerFrame: document.querySelector("#runner-frame"),
   runnerLog: document.querySelector("#runner-log"),
   stopRun: document.querySelector("#stop-run"),
-  nativeDialog: document.querySelector("#native-run-dialog"),
-  nativeClose: document.querySelector("#native-run-close"),
-  nativeCancel: document.querySelector("#native-run-cancel"),
-  nativeConfirm: document.querySelector("#native-run-confirm"),
   toast: document.querySelector("#toast")
 };
 
 let currentLink = "";
+let currentRunLink = "";
 let currentDocument = null;
 let qrModule = null;
 let toastTimer = null;
@@ -124,8 +122,8 @@ function updateSourceCount () {
   elements.sourceCount.textContent = `${text.length.toLocaleString()} characters · ${bytes.toLocaleString()} UTF-8 bytes`;
 }
 
-function outputURL (payload) {
-  return `${rootURL().href}#${payload}`;
+function outputURL (payload, autoRun = false) {
+  return `${rootURL().href}#${autoRun ? "r:" : ""}${payload}`;
 }
 
 function qrURL (payload) {
@@ -186,6 +184,9 @@ async function generateLink () {
     const alphabet = elements.emoji.checked ? outputAlphabetEmoji : outputAlphabetASCII;
     const encoded = compressText(source, alphabet, elements.format.value);
     currentLink = outputURL(encoded.payload);
+    currentRunLink = encoded.kind === "javascript"
+      ? outputURL(encoded.payload, true)
+      : "";
     const symbols = countSymbols(encoded.payload, alphabet);
     const ratio = source.length
       ? Math.round((1 - symbols / source.length) * 100)
@@ -200,6 +201,7 @@ async function generateLink () {
     ].join(" · ");
     elements.resultWarning.hidden = currentLink.length <= 8000;
     elements.openLink.href = currentLink;
+    elements.copyRunLink.hidden = !currentRunLink;
     elements.result.hidden = false;
     await drawQR();
   } catch (error) {
@@ -263,10 +265,15 @@ function selectTab (tab) {
 function decodeLocation () {
   let payload = "";
   let alphabet = outputAlphabetASCII;
+  let autoRun = false;
 
   try {
     if (window.location.hash.length > 1) {
-      const fragment = window.location.hash.slice(1);
+      let fragment = window.location.hash.slice(1);
+      if (fragment.startsWith("r:")) {
+        autoRun = true;
+        fragment = fragment.slice(2);
+      }
       if (fragment.startsWith("q:")) {
         payload = decodeURIComponent(fragment.slice(2));
         alphabet = outputAlphabetQR;
@@ -277,7 +284,16 @@ function decodeLocation () {
     }
 
     if (!payload) return false;
-    showViewer(decompressText(payload, alphabet), payload, alphabet);
+    const decoded = decompressText(payload, alphabet);
+    if (autoRun && decoded.kind !== "javascript") {
+      throw new Error("Auto-run links must contain JavaScript");
+    }
+    showViewer(decoded, payload, alphabet);
+    if (autoRun) {
+      elements.parentScope.checked = true;
+      updateRunMode();
+      window.queueMicrotask(runInParentScope);
+    }
     return true;
   } catch (error) {
     showToast(`This link is not a valid ln.kr document: ${error.message || error}`, "error");
@@ -343,7 +359,7 @@ document.body.append(executable);
 
 function requestRun () {
   if (currentDocument?.kind === "javascript" && elements.parentScope.checked) {
-    openDialog(elements.nativeDialog);
+    runInParentScope();
     return;
   }
   runCurrentDocument();
@@ -351,7 +367,6 @@ function requestRun () {
 
 async function runInParentScope () {
   if (!currentDocument || currentDocument.kind !== "javascript") return;
-  closeDialog(elements.nativeDialog);
   stopRunner();
 
   try {
@@ -378,6 +393,14 @@ elements.copyLink.addEventListener("click", async () => {
   try {
     await copyText(currentLink);
     showToast("Link copied");
+  } catch (error) {
+    showToast(error.message || String(error), "error");
+  }
+});
+elements.copyRunLink.addEventListener("click", async () => {
+  try {
+    await copyText(currentRunLink);
+    showToast("Auto-run link copied");
   } catch (error) {
     showToast(error.message || String(error), "error");
   }
@@ -440,10 +463,6 @@ elements.edit.addEventListener("click", () => {
 elements.aboutOpen.addEventListener("click", () => openDialog(elements.aboutDialog));
 elements.aboutClose.addEventListener("click", () => closeDialog(elements.aboutDialog));
 elements.aboutDialog.addEventListener("click", event => closeOnBackdrop(elements.aboutDialog, event));
-elements.nativeClose.addEventListener("click", () => closeDialog(elements.nativeDialog));
-elements.nativeCancel.addEventListener("click", () => closeDialog(elements.nativeDialog));
-elements.nativeConfirm.addEventListener("click", runInParentScope);
-elements.nativeDialog.addEventListener("click", event => closeOnBackdrop(elements.nativeDialog, event));
 window.addEventListener("message", event => {
   const data = event.data;
   if (

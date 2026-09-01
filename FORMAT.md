@@ -63,7 +63,12 @@ compact while preserving every differing byte.
 ## URL forms
 
 - ASCII or emoji: `https://a.shel.sh/#PAYLOAD`
+- Explicit JavaScript auto-run: `https://a.shel.sh/#r:PAYLOAD`
 - QR: `HTTPS://A.SHEL.SH/T/PAYLOAD`
+
+The `r:` marker is outside the encoded payload. It is accepted only when the
+decoded display kind is JavaScript, selects parent scope, and evaluates once
+on load. The unprefixed form remains inert until the recipient chooses Run.
 
 The QR path uses only QR alphanumeric-mode characters. GitHub Pages serves
 `404.html`, which moves that payload into `#q:PAYLOAD`; the normal decoder then
