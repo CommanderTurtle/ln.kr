@@ -42,7 +42,7 @@ export const textDictionary = Object.freeze([
   "width: ", "height: ", "font-size: ", "font-family: ", "align-items: ", "justify-content: ",
   "```javascript", "```js", "```html", "```css", "```json", "```bash", "```text",
   "**", "__", "~~", "![", "https://", "http://", "www.", "README", "LICENSE",
-  " the ", " and ", " that ", " with ", " from ", " this ", " for ", " are ", " not ",
+  " the ", " and ", " that ", " with ", " this ", " for ", " are ", " not ",
   "The ", "This ", "There ", " can ", " will ", " into ", " when ", " then ", "ing ",
   "()", "[]", "{}", "();", ");", ", ", ": ", ";\n", " {\n", "}\n", "},\n", "\";",
   "?.", "??", "...", "${", "?.(", "?.[", "Promise", "resolve", "reject",
@@ -285,13 +285,13 @@ class BitReader {
 export function detectKind (text) {
   if (/<!doctype\s+html|<html[\s>]|<body[\s>]|<div[\s>]/i.test(text)) return "html";
   if (
-    /(^|\n)\s*(?:import|export|const|let|var|function|class)\s/.test(text) ||
-    /(?:=>|document\.querySelector|addEventListener\s*\()/.test(text)
-  ) return "javascript";
-  if (
     /(^|\n)(?:#{1,6}\s|```|>\s|[-*+]\s|\d+\.\s)/.test(text) ||
     /\[[^\]]+\]\([^)]+\)|\*\*[^*]+\*\*/.test(text)
   ) return "markdown";
+  if (
+    /(^|\n)\s*(?:import|export|const|let|var|function|class)\s/.test(text) ||
+    /(?:=>|document\.querySelector|addEventListener\s*\()/.test(text)
+  ) return "javascript";
   return "text";
 }
 

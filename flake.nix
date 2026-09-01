@@ -1,5 +1,5 @@
 {
-  description = "A Flake providing everything needed to run hamr";
+  description = "A Flake providing the ln.kr text-link codec";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin"; # last branch to suppport Intel macOS
@@ -33,8 +33,8 @@
           system,
         }:
         {
-          hamr = pkgs.callPackage ./package.nix { };
-          default = self.packages.${system}.hamr;
+          lnkr = pkgs.callPackage ./package.nix { };
+          default = self.packages.${system}.lnkr;
         }
       );
     };

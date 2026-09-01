@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#111512">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'none'; img-src 'self' data: blob:; media-src data: blob:; style-src 'self'; script-src 'self' 'unsafe-inline'; frame-src 'self' data: blob:; object-src 'none'; base-uri 'self'; form-action 'none'">
+  <meta name="description" content="Lossless text and code carried entirely in a link.">
+  <title>ln.kr · text in the link</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="wordmark" href="./" aria-label="ln.kr home">
+      <span class="wordmark-mark">ln</span><span class="wordmark-dot">.</span><span>kr</span>
+    </a>
+    <span class="header-rule" aria-hidden="true"></span>
+    <p>text in the link</p>
+    <a class="header-link" href="https://github.com/p2r3/ha.mr" target="_blank" rel="noopener noreferrer">ha.mr lineage ↗</a>
+  </header>
+
+  <main>
+    <section id="composer" class="composer" hidden>
+      <div class="hero">
+        <p class="eyebrow">No account. No paste database. No server payload.</p>
+        <h1>Turn exact source into<br><em>one self-contained link.</em></h1>
+        <p class="hero-copy">Code, Markdown, notes, whitespace, line endings, and Unicode survive byte-for-byte. Repeated blocks collapse into references; the browser does everything.</p>
+      </div>
+
+      <form id="composer-form" class="editor-card">
+        <div class="editor-bar">
+          <label for="source-input">Source</label>
+          <span id="source-count">0 characters · 0 UTF-8 bytes</span>
+        </div>
+        <textarea id="source-input" placeholder="# A small document&#10;&#10;Paste Markdown, JavaScript, HTML, or exact plain text here…" spellcheck="false" autofocus></textarea>
+        <div class="controls">
+          <label class="select-control">
+            <span>Render as</span>
+            <select id="source-format" autocomplete="off">
+              <option value="auto">Auto detect</option>
+              <option value="markdown">Markdown</option>
+              <option value="javascript">JavaScript</option>
+              <option value="html">HTML</option>
+              <option value="text">Plain text</option>
+            </select>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="setting-emoji" autocomplete="off">
+            <span class="toggle-track" aria-hidden="true"></span>
+            <span>Emoji alphabet</span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="setting-qr" autocomplete="off">
+            <span class="toggle-track" aria-hidden="true"></span>
+            <span>Build QR</span>
+          </label>
+          <button id="create-link" class="primary" type="submit">Create ln.kr link</button>
+        </div>
+      </form>
+
+      <section id="link-result" class="result-card" aria-live="polite" hidden>
+        <div class="result-heading">
+          <div>
+            <p class="eyebrow">Encoded locally</p>
+            <h2>Your document is the URL.</h2>
+          </div>
+          <span class="success-dot" aria-label="ready"></span>
+        </div>
+        <label class="link-field">
+          <span>Share link</span>
+          <textarea id="output-link" rows="3" readonly></textarea>
+        </label>
+        <p id="result-meta" class="result-meta"></p>
+        <p id="result-warning" class="warning" hidden>This is a very long URL. The codec is valid, but a chat app, browser, or QR scanner may impose its own length limit.</p>
+        <div class="result-actions">
+          <button id="copy-link" class="primary" type="button">Copy link</button>
+          <a id="open-link" class="button" target="_blank" rel="noopener">Open viewer ↗</a>
+        </div>
+        <figure id="qr-wrap" class="qr-wrap" hidden>
+          <canvas id="qrcode"></canvas>
+          <figcaption>QR uses ha.mr’s alphanumeric alphabet and automatic error correction.</figcaption>
+        </figure>
+      </section>
+    </section>
+
+    <section id="viewer" class="viewer" hidden>
+      <div class="viewer-heading">
+        <div>
+          <p class="eyebrow">Self-contained document</p>
+          <h1><span id="viewer-kind">text</span> <em>from the link.</em></h1>
+          <p id="viewer-meta" class="viewer-meta"></p>
+        </div>
+        <button id="edit-source" class="button" type="button">Edit a copy</button>
+      </div>
+
+      <div class="action-bar" aria-label="Document actions">
+        <button id="copy-raw" type="button">Copy raw</button>
+        <button id="copy-rich" type="button">Copy rich</button>
+        <button id="copy-jsfuck" type="button">Copy JSFuck</button>
+        <button id="copy-invisible" type="button">Copy invisible</button>
+        <button id="run-code" class="run-button" type="button">Run in sandbox</button>
+      </div>
+
+      <div class="document-shell">
+        <div class="tabs" role="tablist" aria-label="Document view">
+          <button id="tab-rendered" role="tab" aria-selected="true" type="button">Rendered</button>
+          <button id="tab-source" role="tab" aria-selected="false" type="button">Exact source</button>
+        </div>
+        <article id="preview" class="preview"></article>
+        <pre id="source-view" class="source-view" hidden></pre>
+      </div>
+
+      <section id="runner" class="runner" hidden>
+        <div class="runner-head">
+          <div>
+            <span class="live-dot"></span>
+            <strong>Isolated preview</strong>
+            <small>Scripts allowed · network blocked · unique origin</small>
+          </div>
+          <button id="stop-run" type="button">Stop &amp; clear</button>
+        </div>
+        <iframe id="runner-frame" title="Sandboxed code output" sandbox="allow-scripts"></iframe>
+        <div id="runner-log" class="runner-log" aria-live="polite"></div>
+      </section>
+    </section>
+  </main>
+
+  <footer>
+    <span>ln.kr keeps payloads in the fragment—nothing is uploaded.</span>
+    <span>Codec lineage: <a href="https://github.com/p2r3/ha.mr" target="_blank" rel="noopener noreferrer">p2r3/ha.mr</a></span>
+  </footer>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script src="./vendor/jsfuck.js"></script>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
