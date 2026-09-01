@@ -37,12 +37,14 @@ The generated page provides:
 - **Copy raw** and **Copy rich**;
 - local **Copy JSFuck** and AEM1K-style **Copy invisible** exports for
   JavaScript;
-- an explicit **Run in sandbox** action for JavaScript and HTML.
+- an explicit **Run in sandbox** action for JavaScript and HTML;
+- a JSFuck-compatible **Run in parent scope** opt-in for JavaScript.
 
 Opening a link never runs its contents. Markdown HTML is treated as text, links
-are protocol-filtered, and code runs only after a click in an `allow-scripts`
-iframe with a unique origin and a network-blocking Content Security Policy.
-Stopping the runner destroys its document.
+are protocol-filtered, and parent-scope execution requires both checking its
+scope control and confirming the warning. The default runner remains an
+`allow-scripts` iframe with a unique origin and a network-blocking Content
+Security Policy. Stopping that runner destroys its document.
 
 ## Run locally
 

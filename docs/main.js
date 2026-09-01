@@ -24,8 +24,12 @@ const elements = {
   openLink: document.querySelector("#open-link"),
   qrCanvas: document.querySelector("#qrcode"),
   qrWrap: document.querySelector("#qr-wrap"),
+  aboutOpen: document.querySelector("#about-open"),
+  aboutDialog: document.querySelector("#about-dialog"),
+  aboutClose: document.querySelector("#about-close"),
   viewerKind: document.querySelector("#viewer-kind"),
   viewerMeta: document.querySelector("#viewer-meta"),
+  viewerSummary: document.querySelector("#viewer-summary"),
   preview: document.querySelector("#preview"),
   sourceView: document.querySelector("#source-view"),
   renderTab: document.querySelector("#tab-rendered"),
@@ -35,11 +39,17 @@ const elements = {
   copyRich: document.querySelector("#copy-rich"),
   copyJSFuck: document.querySelector("#copy-jsfuck"),
   copyInvisible: document.querySelector("#copy-invisible"),
+  runScopeControl: document.querySelector("#run-scope-control"),
+  parentScope: document.querySelector("#run-parent-scope"),
   run: document.querySelector("#run-code"),
   runner: document.querySelector("#runner"),
   runnerFrame: document.querySelector("#runner-frame"),
   runnerLog: document.querySelector("#runner-log"),
   stopRun: document.querySelector("#stop-run"),
+  nativeDialog: document.querySelector("#native-run-dialog"),
+  nativeClose: document.querySelector("#native-run-close"),
+  nativeCancel: document.querySelector("#native-run-cancel"),
+  nativeConfirm: document.querySelector("#native-run-confirm"),
   toast: document.querySelector("#toast")
 };
 
@@ -78,6 +88,18 @@ function showToast (message, tone = "ok") {
   toastTimer = window.setTimeout(() => {
     elements.toast.hidden = true;
   }, 2600);
+}
+
+function openDialog (dialog) {
+  if (!dialog.open) dialog.showModal();
+}
+
+function closeDialog (dialog) {
+  if (dialog.open) dialog.close();
+}
+
+function closeOnBackdrop (dialog, event) {
+  if (event.target === dialog) dialog.close();
 }
 
 async function copyText (value) {
@@ -203,18 +225,29 @@ function stopRunner () {
   elements.runnerLog.textContent = "";
 }
 
+function updateRunMode () {
+  const native = currentDocument?.kind === "javascript" && elements.parentScope.checked;
+  elements.run.textContent = native ? "Run on page" : "Run in sandbox";
+  elements.run.classList.toggle("native-run-button", native);
+}
+
 function showViewer (decoded, payload, alphabet) {
   currentDocument = decoded;
   stopRunner();
   elements.composer.hidden = true;
   elements.viewer.hidden = false;
   elements.viewerKind.textContent = decoded.kind;
-  elements.viewerMeta.textContent = `${decoded.text.length.toLocaleString()} characters · ${countSymbols(payload, alphabet).toLocaleString()} link symbols · format v${decoded.version}`;
+  const symbolCount = countSymbols(payload, alphabet);
+  elements.viewerMeta.textContent = `${decoded.text.length.toLocaleString()} characters · ${symbolCount.toLocaleString()} link symbols · format v${decoded.version}`;
+  elements.viewerSummary.textContent = `${decoded.kind} · ${decoded.text.length.toLocaleString()} characters · format v${decoded.version}`;
   elements.sourceView.textContent = decoded.text;
   renderContent(elements.preview, decoded.text, decoded.kind);
   elements.copyJSFuck.hidden = decoded.kind !== "javascript";
   elements.copyInvisible.hidden = decoded.kind !== "javascript";
+  elements.runScopeControl.hidden = decoded.kind !== "javascript";
+  if (decoded.kind !== "javascript") elements.parentScope.checked = false;
   elements.run.hidden = !["javascript", "html"].includes(decoded.kind);
+  updateRunMode();
   selectTab("rendered");
   document.title = `ln.kr · ${decoded.kind}`;
 }
@@ -308,6 +341,28 @@ document.body.append(executable);
 <\/script>`;
 }
 
+function requestRun () {
+  if (currentDocument?.kind === "javascript" && elements.parentScope.checked) {
+    openDialog(elements.nativeDialog);
+    return;
+  }
+  runCurrentDocument();
+}
+
+async function runInParentScope () {
+  if (!currentDocument || currentDocument.kind !== "javascript") return;
+  closeDialog(elements.nativeDialog);
+  stopRunner();
+
+  try {
+    const result = window.eval(currentDocument.text);
+    if (result && typeof result.then === "function") await result;
+    showToast("JavaScript finished in parent scope");
+  } catch (error) {
+    showToast(`Parent-scope error: ${error.message || error}`, "error");
+  }
+}
+
 elements.form.addEventListener("submit", event => {
   event.preventDefault();
   generateLink();
@@ -344,8 +399,14 @@ elements.copyJSFuck.addEventListener("click", async () => {
   showToast("Encoding JSFuck…");
   await new Promise(resolve => window.setTimeout(resolve, 0));
   try {
-    await copyText(window.JSFuck.encode(currentDocument.text, true));
-    showToast("Executable JSFuck copied");
+    await copyText(window.JSFuck.encode(
+      currentDocument.text,
+      true,
+      elements.parentScope.checked
+    ));
+    showToast(elements.parentScope.checked
+      ? "Parent-scope JSFuck copied"
+      : "Executable JSFuck copied");
   } catch (error) {
     showToast(error.message || String(error), "error");
   } finally {
@@ -360,7 +421,8 @@ elements.copyInvisible.addEventListener("click", async () => {
     showToast(error.message || String(error), "error");
   }
 });
-elements.run.addEventListener("click", runCurrentDocument);
+elements.parentScope.addEventListener("change", updateRunMode);
+elements.run.addEventListener("click", requestRun);
 elements.stopRun.addEventListener("click", stopRunner);
 elements.edit.addEventListener("click", () => {
   const source = currentDocument.text;
@@ -375,6 +437,13 @@ elements.edit.addEventListener("click", () => {
   elements.input.focus();
   document.title = "ln.kr · text in the link";
 });
+elements.aboutOpen.addEventListener("click", () => openDialog(elements.aboutDialog));
+elements.aboutClose.addEventListener("click", () => closeDialog(elements.aboutDialog));
+elements.aboutDialog.addEventListener("click", event => closeOnBackdrop(elements.aboutDialog, event));
+elements.nativeClose.addEventListener("click", () => closeDialog(elements.nativeDialog));
+elements.nativeCancel.addEventListener("click", () => closeDialog(elements.nativeDialog));
+elements.nativeConfirm.addEventListener("click", runInParentScope);
+elements.nativeDialog.addEventListener("click", event => closeOnBackdrop(elements.nativeDialog, event));
 window.addEventListener("message", event => {
   const data = event.data;
   if (
