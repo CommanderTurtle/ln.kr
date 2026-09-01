@@ -1,23 +1,107 @@
-# ha.mr
+# ln.kr
 
-Compresses links and optimizes QR codes entirely in the browser, without a back-end database.
+Lossless text and code carried entirely in a link.
 
-## How
+ln.kr is a static, browser-only descendant of
+[p2r3/ha.mr](https://github.com/p2r3/ha.mr). ha.mr’s positive-BigInt
+bitstream and ASCII, QR, and emoji alphabets remain the foundation. ln.kr adds
+a versioned text grammar above that engine; it does not replace it with Brotli,
+DEFLATE, Base64URL, a server-side paste ID, or a generic compression package.
 
-1. Common parts of the link (e.g. protocol, `www.` prefix, `index.html`) are manually detected and reduced to individual bits. If present, the port is encoded as a raw numeric value.
-2. Second-level and top-level domains are matched against a Huffman-coded dictionary of the most common websites and TLDs.
-3. The rest of the link is split into parts, and each segment is either fitted to a predefined character set, or Huffman coded.
-4. For links, the output is encoded in the full character set of a URL. (I've been informed that square brackets `[]` are not supposed to be a part of this set, but it's too late to change that now.)
-5. For QR codes, the output uses the alphanumeric character set to remove overhead compared to other QR code generators.
+Open the site, paste source, and share the resulting fragment URL. The source
+is decoded by the recipient’s browser. Nothing is uploaded.
 
-## Contributing
+## What it preserves
 
-- **Keep the scope small.** This is a simple project, and it should stay that way. I welcome bug fixes or standard maintenance, but I do not wish to stack features upon features or refactor everything into the newest web framework. One day, this project might reach a state where nothing has to be changed, and that's fine.
-- **Discuss, then code.** Search through past issues, or create a new issue if needed, to assess whether the change is necessary. Only _then_ make a pull request. Even if you put a lot of work into your code, please understand that I'm not obligated to merge it if it doesn't align with the project's scope or goals. If the change hasn't been discussed and isn't trivial, I will simply close the pull request and direct you to this here paragraph.
-- **Be transparent about tool use.** Look, I wrote this project by hand as a learning exercise, so obviously I'd prefer if it remained "pure". However, banning AI would just lead to people sneaking it in regardless, or worse, out of spite. Instead, I offer a compromise - if you're upfront about where AI was used, if the generated code fits in stylistically, and if you can explain (in your own words) how your change works, I will allow it. If I suspect that you're trying to pass off AI-generated work as your own, I will block you from the repository.
+- Exact UTF-8 source, including indentation, repeated spaces, tabs, blank
+  lines, LF/CRLF bytes already present in the input, combining marks, and emoji.
+- Markdown, JavaScript, HTML, or plain-text display intent.
+- ha.mr’s ASCII, QR-alphanumeric, and emoji output modes.
+- Original ha.mr URL-codec behavior. Frozen upstream vectors guard its outputs
+  byte-for-byte in the test suite.
 
-## Acknowledgements
+The v1 grammar combines a ranked code/Markdown dictionary with prior-output
+references. An exact paragraph repeated *N* times becomes a copy record. A
+mostly repeated block with changed lines becomes copy → exact literal → copy,
+so the unchanged regions are reused without normalizing the changed region.
+The byte count, UTF-8 validation, trailing-data check, and CRC-32 must all agree
+before a document is rendered.
 
-- https://www.npmjs.com/package/lean-qr
-- https://github.com/smythp/reddit_links_dataset
-- https://github.com/ada-url/url-dataset
+See [FORMAT.md](FORMAT.md) for the wire format.
+
+## Viewer
+
+The generated page provides:
+
+- a safe Markdown preview and an exact-source view;
+- **Copy raw** and **Copy rich**;
+- local **Copy JSFuck** and AEM1K-style **Copy invisible** exports for
+  JavaScript;
+- an explicit **Run in sandbox** action for JavaScript and HTML.
+
+Opening a link never runs its contents. Markdown HTML is treated as text, links
+are protocol-filtered, and code runs only after a click in an `allow-scripts`
+iframe with a unique origin and a network-blocking Content Security Policy.
+Stopping the runner destroys its document.
+
+## Run locally
+
+No install or build is required for the site. Bun is only used for the local
+development server and tests.
+
+```bash
+bun run serve
+# http://127.0.0.1:4173/
+
+bun test
+```
+
+The development server reproduces GitHub Pages’ `404.html` behavior so QR
+routes can be tested locally.
+
+## CLI
+
+`standalone.js` exposes the same text format without a browser:
+
+```bash
+node standalone.js encode "const answer = 42;" ascii javascript
+node standalone.js decode "https://a.shel.sh/#..."
+
+# Preserve a file exactly through stdin
+node standalone.js encode - emoji markdown < README.md
+```
+
+The Nix package installs this as `lnkr`.
+
+## Deploy
+
+The deployable site is `docs/`. It is ready for GitHub Pages and includes the
+custom domain in `docs/CNAME`:
+
+```text
+a.shel.sh
+```
+
+The Docker image serves the same directory with Nginx and sends unknown QR
+paths through `404.html`.
+
+## Tests
+
+The suite covers:
+
+- exact untouched ha.mr ASCII, QR, and emoji URL fixtures;
+- all three alphabets for ln.kr text;
+- empty, whitespace-sensitive, CRLF/LF, NUL, combining, multilingual, and
+  emoji cases;
+- exact and sparsely modified repetition;
+- deterministic mixed-Unicode fuzz cases;
+- payload corruption rejection;
+- vendored JSFuck alphabet and execution.
+
+## Lineage and licenses
+
+The repository retains ha.mr’s MIT license and Git history. The URL engine,
+alphabets, and lean-qr code originate upstream. `docs/vendor/jsfuck.js` is
+JSFuck 0.5.0 by Martin Kleppe and is distributed upstream under the WTFPL.
+The invisible export follows the technique documented at
+<https://aem1k.com/invisible/encoder/>.

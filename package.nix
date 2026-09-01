@@ -5,7 +5,7 @@
   nodejs,
 }:
 stdenvNoCC.mkDerivation {
-  name = "hamr";
+  name = "lnkr";
 
   src = ./.;
 
@@ -14,17 +14,17 @@ stdenvNoCC.mkDerivation {
   installPhase = ''
     runHook preInstall
     mkdir -p $out/bin $out/lib/docs
-    cp docs/alphabets.js docs/compress.js $out/lib/docs
-    cp standalone.js $out/lib
-    makeWrapper ${lib.getExe nodejs} $out/bin/hamr \
+    cp docs/alphabets.js docs/compress.js docs/text-compress.js $out/lib/docs
+    cp standalone.js package.json $out/lib
+    makeWrapper ${lib.getExe nodejs} $out/bin/lnkr \
       --add-flags "$out/lib/standalone.js"
-    runHook preInstall
+    runHook postInstall
   '';
 
   meta = {
-    description = "Static URL compressor and QR code optimizer";
-    homepage = "https://github.com/p2r3/ha.mr";
-    mainProgram = "hamr";
+    description = "Lossless text and code carried entirely in a link";
+    homepage = "https://a.shel.sh";
+    mainProgram = "lnkr";
     license = lib.licenses.mit;
   };
 }

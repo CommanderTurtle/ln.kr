@@ -7,7 +7,8 @@ import {
 import {
   compressText,
   decompressText,
-  detectKind
+  detectKind,
+  textDictionary
 } from "../docs/text-compress.js";
 
 const exactInputs = [
@@ -25,6 +26,10 @@ const exactInputs = [
 ];
 
 describe("ln.kr exact text codec", () => {
+  test("keeps every versioned dictionary entry unique", () => {
+    expect(new Set(textDictionary).size).toBe(textDictionary.length);
+  });
+
   for (const alphabet of [outputAlphabetASCII, outputAlphabetEmoji, outputAlphabetQR]) {
     for (const input of exactInputs) {
       test(`round trips ${input.length} code units through alphabet ${alphabet.length}`, () => {
@@ -58,6 +63,7 @@ describe("ln.kr exact text codec", () => {
 
   test("detects supported display modes", () => {
     expect(detectKind("# heading\n\nbody")).toBe("markdown");
+    expect(detectKind("# heading\n\n```js\nconst x = 1;\n```")).toBe("markdown");
     expect(detectKind("const value = () => 1;")).toBe("javascript");
     expect(detectKind("<!doctype html><html></html>")).toBe("html");
     expect(detectKind("a regular note")).toBe("text");
@@ -68,5 +74,23 @@ describe("ln.kr exact text codec", () => {
     const last = encoded.payload.at(-1);
     const replacement = last === "!" ? "#" : "!";
     expect(() => decompressText(encoded.payload.slice(0, -1) + replacement, outputAlphabetASCII)).toThrow();
+  });
+
+  test("round trips deterministic mixed-Unicode fuzz cases", () => {
+    let state = 0x1a2b3c4d;
+    const random = () => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state;
+    };
+    const pieces = ["a", "Z", "0", " ", "  ", "\n", "\r\n", "\t", "{}", "```", "🐢", "界", "e\u0301", "\0"];
+    for (let sample = 0; sample < 120; sample ++) {
+      let source = "";
+      const length = 1 + random() % 180;
+      for (let index = 0; index < length; index ++) {
+        source += pieces[random() % pieces.length];
+      }
+      const encoded = compressText(source, outputAlphabetASCII, "text");
+      expect(decompressText(encoded.payload, outputAlphabetASCII).text).toBe(source);
+    }
   });
 });
