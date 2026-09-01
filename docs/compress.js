@@ -77,7 +77,7 @@ for (const key in pathEncode) {
  * @param {string[]} alphabet Ordered list of possible character sequences in output
  * @returns {string} String representing the input number
  */
-function numberToString (number, alphabet) {
+export function numberToString (number, alphabet) {
   const alphabetSize = BigInt(alphabet.length);
   let string = "";
 
@@ -96,7 +96,7 @@ function numberToString (number, alphabet) {
  * @param {string[]} alphabet Ordered list of possible character sequences in `string`
  * @returns {BigInt} Decoded number
  */
-function stringToNumber (string, alphabet) {
+export function stringToNumber (string, alphabet) {
   const alphabetSize = BigInt(alphabet.length);
   let number = 0n;
 
@@ -124,7 +124,7 @@ function stringToNumber (string, alphabet) {
  * @param {string} sequence Binary sequence of "0"/"1" string characters
  * @returns {BigInt} Modified input number with binary sequence encoded
  */
-function huffmanEncode (number, sequence) {
+export function huffmanEncode (number, sequence) {
   for (let i = sequence.length - 1; i >= 0; i --) {
     number <<= 1n;
     if (sequence[i] === "1") number ++;

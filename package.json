@@ -1,0 +1,9 @@
+{
+  "name": "ln.kr",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "serve": "bunx serve docs"
+  }
+}
