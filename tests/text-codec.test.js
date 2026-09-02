@@ -164,10 +164,11 @@ describe("ln.kr exact text codec", () => {
 
     const htmlV1 = compressTextV1(html, outputAlphabetASCII, "html");
     const htmlV2 = compressTextV2(html, outputAlphabetASCII, "html");
+    const cssV2 = compressTextV2(css, outputAlphabetASCII, "text");
     const jsV1 = compressTextV1(javascript, outputAlphabetASCII, "javascript");
     const jsV2 = compressTextV2(javascript, outputAlphabetASCII, "javascript");
 
-    expect(htmlV2.stats.sectorTemplateUse).toBeGreaterThan(0);
+    expect(cssV2.stats.sectorTemplateUse).toBeGreaterThan(0);
     expect(jsV2.stats.lineTemplateUse).toBeGreaterThan(0);
     expect(htmlV2.payload.length).toBeLessThan(htmlV1.payload.length);
     expect(jsV2.payload.length).toBeLessThan(jsV1.payload.length);
@@ -190,11 +191,29 @@ describe("ln.kr exact text codec", () => {
     const authored = compressTextV2(`# Report\r\n\r\n${authoredHTML}`, outputAlphabetASCII, "markdown");
 
     expect(encoded.stats.lineTemplateUse).toBeGreaterThan(0);
-    expect(authored.stats.sectorTemplateUse).toBeGreaterThan(0);
     expect(encoded.payload.length).toBeLessThan(legacy.payload.length);
     expect(decompressText(encoded.payload, outputAlphabetASCII).text).toBe(source);
     expect(decompressText(authored.payload, outputAlphabetASCII).text)
       .toBe(`# Report\r\n\r\n${authoredHTML}`);
+  });
+
+  test("lets v1 copies own exact Markdown repetition while v2 targets changed blocks", () => {
+    const block = `## Firewall rules\n\n\`\`\`bash\niptables -A INPUT -p tcp --dport 443 -j ACCEPT\niptables -A INPUT -j DROP\n\`\`\`\n\n`;
+    const exact = block.repeat(32);
+    const varied = Array.from({ length: 32 }, (_, index) =>
+      index % 3 === 0 ? block.replaceAll("INPUT", "OUTPUT") : block
+    ).join("");
+    const exactV1 = compressTextV1(exact, outputAlphabetASCII, "markdown");
+    const exactV2 = compressTextV2(exact, outputAlphabetASCII, "markdown");
+    const variedV1 = compressTextV1(varied, outputAlphabetASCII, "markdown");
+    const variedV2 = compressTextV2(varied, outputAlphabetASCII, "markdown");
+
+    // Identical blocks are already represented by one v1 prior-output copy.
+    // Empty v2 grammar headers are two bits and can round to one URL symbol.
+    expect(exactV2.payload.length).toBeLessThanOrEqual(exactV1.payload.length + 1);
+    expect(variedV2.payload.length).toBeLessThanOrEqual(variedV1.payload.length + 1);
+    expect(decompressText(exactV2.payload, outputAlphabetASCII).text).toBe(exact);
+    expect(decompressText(variedV2.payload, outputAlphabetASCII).text).toBe(varied);
   });
 
   test("decodes chained structural generations through every transport alphabet", () => {

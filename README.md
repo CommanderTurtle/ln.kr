@@ -48,6 +48,14 @@ and unreferenced definitions are discarded deterministically. Both formats
 decode on the same page. The byte count, UTF-8 validation, trailing-data check,
 and CRC-32 must all agree before a document is rendered.
 
+Exact repeated blocks are already v1's strongest case: one prior-output record
+can represent every later copy regardless of how many times it was pasted. v2
+leaves that record intact rather than replacing it with a structural template.
+With no v2-only records, its two empty grammar headers can round to one extra
+URL symbol. v2's incremental gain appears on repeated families whose fields
+actually differ; definitions that cease to repay themselves after exact-copy
+selection are removed.
+
 See [FORMAT.md](FORMAT.md) for the wire format and
 [STRUCTURAL-COMPRESSION.md](STRUCTURAL-COMPRESSION.md) for the design attempts,
 cost model, and corpus measurements.
@@ -104,11 +112,25 @@ changing that engine. It produces five deliberately different transports:
   the public target’s bytes, status, range response, and media type. It can be
   used directly as an image, media, or fetch source.
 - **Copy source** uses `#s:`. On opening, the browser reads the target through
-  the resolver, anchors relative assets to the final upstream URL, compresses
-  the resulting standalone source locally as v1 HTML, and replaces the short
-  route with the ordinary editable `#PAYLOAD` document URL.
-- **Copy live** does the same through `#hs:`, then replaces itself with the
-  ordinary `#h:PAYLOAD` expanded HTML live-view URL.
+  the resolver, detects HTML, Markdown, JavaScript, or ordinary text from its
+  response type, final suffix, and contents, then replaces the short route with
+  the corresponding ordinary editable `#PAYLOAD` document URL. Only HTML gets
+  the upstream `<base>` anchor; a raw README or script stays raw.
+- Explicit `#sm:`, `#sj:`, and `#sh:` source aliases force Markdown,
+  JavaScript, or HTML when a server supplies ambiguous metadata.
+- A bare `#s:`/`#sm:`/`#sj:`/`#sh:` link on its own source line is a runtime
+  include. Its raw textual result is expanded before the existing
+  Markdown/HTML preview or JavaScript runner receives the document, so CSS,
+  scripts, and Markdown sections can remain modular. Source, Copy raw, and
+  Edit a copy still expose the exact authored link rather than the expansion.
+  Includes may nest; repeated targets are fetched once. Inline links and
+  `#lr:` links are never treated as includes.
+- **Copy live** uses the existing `#hs:` route and the same detection. HTML and
+  Markdown continue into their existing `#h:`/`#m:` expanded viewers;
+  JavaScript opens in its existing editable viewer with the run controls.
+- Binary responses are left on **Copy direct** instead of being decoded as
+  UTF-8. This preserves the browser's native PDF/media handling and range
+  requests.
 - **Copy image** appears only for a recognized image suffix. `#i:` expands the
   target into the project’s complete editable JavaScript image viewer, shows
   that exact source in the normal viewer, and runs it in parent scope.
@@ -119,6 +141,9 @@ positive-BigInt stream. The isolated `lr.a.shel.sh` origin is intentional:
 arbitrary resolved content never shares the `a.shel.sh` application origin.
 The resolver stores nothing, sends no target credentials or cookies, follows
 only revalidated public HTTP(S) redirects, and rejects private/local targets.
+Use this direct form inside authored `src`/`href` attributes or a custom media
+viewer; runtime source inclusion is intentionally reserved for textual
+Markdown, JavaScript, CSS, HTML, and similar source files.
 
 ## Run locally
 

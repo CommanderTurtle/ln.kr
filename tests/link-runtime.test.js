@@ -10,7 +10,9 @@ import {
   decodeLinkTarget,
   encodeDirectLinkTarget,
   encodeLinkTarget,
+  isTextualSourceResponse,
   linkPrefixForMode,
+  sourceKindHint,
   splitLinkFragment,
   validateLinkTarget
 } from "../docs/link-runtime.js";
@@ -21,13 +23,31 @@ describe("link routes", () => {
     expect(splitLinkFragment("lr:payload")).toEqual({ mode: "resolved", payload: "payload" });
     expect(splitLinkFragment("i:payload")).toEqual({ mode: "image", payload: "payload" });
     expect(splitLinkFragment("s:payload")).toEqual({ mode: "source", payload: "payload" });
+    expect(splitLinkFragment("sm:payload")).toEqual({ mode: "source-markdown", payload: "payload" });
+    expect(splitLinkFragment("sj:payload")).toEqual({ mode: "source-javascript", payload: "payload" });
+    expect(splitLinkFragment("sh:payload")).toEqual({ mode: "source-html", payload: "payload" });
     expect(splitLinkFragment("hs:payload")).toEqual({ mode: "source-live", payload: "payload" });
     expect(splitLinkFragment("payload")).toEqual({ mode: "", payload: "payload" });
     expect(linkPrefixForMode("guarded")).toBe("l:");
     expect(linkPrefixForMode("resolved")).toBe("lr:");
     expect(linkPrefixForMode("image")).toBe("i:");
     expect(linkPrefixForMode("source")).toBe("s:");
+    expect(linkPrefixForMode("source-markdown")).toBe("sm:");
+    expect(linkPrefixForMode("source-javascript")).toBe("sj:");
+    expect(linkPrefixForMode("source-html")).toBe("sh:");
     expect(linkPrefixForMode("source-live")).toBe("hs:");
+  });
+
+  test("classifies textual source without treating binary resolver responses as UTF-8", () => {
+    expect(sourceKindHint("https://raw.example.test/README.md", "text/plain")).toBe("markdown");
+    expect(sourceKindHint("https://cdn.example.test/app", "application/javascript; charset=utf-8"))
+      .toBe("javascript");
+    expect(sourceKindHint("https://example.test/page", "text/html")).toBe("html");
+    expect(sourceKindHint("https://example.test/theme.css", "text/plain")).toBe("text");
+    expect(isTextualSourceResponse("https://example.test/theme.css", "text/css")).toBe(true);
+    expect(isTextualSourceResponse("https://example.test/report.pdf", "application/pdf")).toBe(false);
+    expect(isTextualSourceResponse("https://example.test/README.md", "application/octet-stream"))
+      .toBe(true);
   });
 
   for (const alphabet of [outputAlphabetASCII, outputAlphabetEmoji]) {
@@ -108,7 +128,7 @@ test("the image alias expands to the established editable JavaScript viewer", as
   expect(source).toContain("imageViewerSource(directResolverURL(target))");
 });
 
-test("source routes anchor assets and expand through the normal editable and live HTML formats", async () => {
+test("source routes detect text kinds, anchor only HTML, and reuse existing viewers", async () => {
   const sources = await Promise.all([
     Bun.file(new URL("../docs/index.html", import.meta.url)).text(),
     Bun.file(new URL("../docs/main.js", import.meta.url)).text()
@@ -116,7 +136,9 @@ test("source routes anchor assets and expand through the normal editable and liv
   const source = sources.join("\n");
   expect(source).toContain('id="copy-source-link"');
   expect(source).toContain('id="copy-live-source-link"');
-  expect(source).toContain('anchorResolvedHTML(await response.text(), sourceURL)');
-  expect(source).toContain('compressTextV1(source, outputAlphabetASCII, "html")');
-  expect(source).toContain('outputURL(encoded.payload, live ? "html" : "")');
+  expect(source).toContain('sourceKindHint(sourceURL, contentType) || detectKind(fetchedSource)');
+  expect(source).toContain('kind === "html"');
+  expect(source).toContain('anchorResolvedHTML(fetchedSource, sourceURL)');
+  expect(source).toContain('compressTextV1(source, outputAlphabetASCII, kind)');
+  expect(source).toContain('["markdown", "html"].includes(kind)');
 });
