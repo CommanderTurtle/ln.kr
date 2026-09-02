@@ -5,6 +5,10 @@ import {
 } from "./alphabets.js";
 import { compressText, decompressText } from "./text-compress.js";
 import { renderContent } from "./render.js";
+import {
+  executablePrefixForKind,
+  splitExecutableFragment
+} from "./viewer-runtime.js";
 
 const elements = {
   composer: document.querySelector("#composer"),
@@ -42,10 +46,15 @@ const elements = {
   copyInvisible: document.querySelector("#copy-invisible"),
   runScopeControl: document.querySelector("#run-scope-control"),
   parentScope: document.querySelector("#run-parent-scope"),
+  networkControl: document.querySelector("#network-control"),
+  network: document.querySelector("#run-network"),
   run: document.querySelector("#run-code"),
   runner: document.querySelector("#runner"),
   runnerFrame: document.querySelector("#runner-frame"),
+  runnerStatus: document.querySelector("#runner-status"),
   runnerLog: document.querySelector("#runner-log"),
+  expandRun: document.querySelector("#expand-run"),
+  collapseRun: document.querySelector("#collapse-run"),
   stopRun: document.querySelector("#stop-run"),
   toast: document.querySelector("#toast")
 };
@@ -56,6 +65,8 @@ let currentDocument = null;
 let qrModule = null;
 let toastTimer = null;
 let runToken = null;
+let currentRender = Promise.resolve();
+let renderGeneration = 0;
 
 function rootURL () {
   const url = new URL(window.location.href);
@@ -122,8 +133,8 @@ function updateSourceCount () {
   elements.sourceCount.textContent = `${text.length.toLocaleString()} characters · ${bytes.toLocaleString()} UTF-8 bytes`;
 }
 
-function outputURL (payload, autoRun = false) {
-  return `${rootURL().href}#${autoRun ? "r:" : ""}${payload}`;
+function outputURL (payload, executableKind = "") {
+  return `${rootURL().href}#${executablePrefixForKind(executableKind)}${payload}`;
 }
 
 function qrURL (payload) {
@@ -184,8 +195,8 @@ async function generateLink () {
     const alphabet = elements.emoji.checked ? outputAlphabetEmoji : outputAlphabetASCII;
     const encoded = compressText(source, alphabet, elements.format.value);
     currentLink = outputURL(encoded.payload);
-    currentRunLink = encoded.kind === "javascript"
-      ? outputURL(encoded.payload, true)
+    currentRunLink = executablePrefixForKind(encoded.kind)
+      ? outputURL(encoded.payload, encoded.kind)
       : "";
     const symbols = countSymbols(encoded.payload, alphabet);
     const ratio = source.length
@@ -202,6 +213,10 @@ async function generateLink () {
     elements.resultWarning.hidden = currentLink.length <= 8000;
     elements.openLink.href = currentLink;
     elements.copyRunLink.hidden = !currentRunLink;
+    elements.copyRunLink.dataset.kind = encoded.kind;
+    elements.copyRunLink.textContent = encoded.kind === "javascript"
+      ? "Copy auto-run link"
+      : "Copy live-view link";
     elements.result.hidden = false;
     await drawQR();
   } catch (error) {
@@ -219,8 +234,19 @@ function alphabetFromFragment (payload) {
     : outputAlphabetASCII;
 }
 
+function setRunnerExpanded (expanded) {
+  elements.runner.classList.toggle("runner-expanded", expanded);
+  document.body.classList.toggle("runner-is-expanded", expanded);
+  elements.expandRun.hidden = expanded;
+  elements.expandRun.setAttribute("aria-expanded", String(expanded));
+  elements.collapseRun.hidden = !expanded;
+  if (expanded) elements.collapseRun.focus({ preventScroll: true });
+}
+
 function stopRunner () {
   runToken = null;
+  setRunnerExpanded(false);
+  elements.runnerFrame.setAttribute("sandbox", "allow-scripts");
   elements.runnerFrame.removeAttribute("srcdoc");
   elements.runnerFrame.src = "about:blank";
   elements.runner.hidden = true;
@@ -229,8 +255,13 @@ function stopRunner () {
 
 function updateRunMode () {
   const native = currentDocument?.kind === "javascript" && elements.parentScope.checked;
+  const documentViewer = ["markdown", "html"].includes(currentDocument?.kind);
   elements.run.textContent = native ? "Run on page" : "Run in sandbox";
   elements.run.classList.toggle("native-run-button", native);
+  elements.networkControl.hidden = !documentViewer;
+  elements.runnerStatus.textContent = documentViewer && elements.network.checked
+    ? "Scripts allowed · network allowed · unique origin"
+    : "Scripts allowed · network blocked · unique origin";
 }
 
 function showViewer (decoded, payload, alphabet) {
@@ -243,12 +274,20 @@ function showViewer (decoded, payload, alphabet) {
   elements.viewerMeta.textContent = `${decoded.text.length.toLocaleString()} characters · ${symbolCount.toLocaleString()} link symbols · format v${decoded.version}`;
   elements.viewerSummary.textContent = `${decoded.kind} · ${decoded.text.length.toLocaleString()} characters · format v${decoded.version}`;
   elements.sourceView.textContent = decoded.text;
-  renderContent(elements.preview, decoded.text, decoded.kind);
+  const generation = ++renderGeneration;
+  currentRender = renderContent(elements.preview, decoded.text, decoded.kind)
+    .catch(error => {
+      if (generation !== renderGeneration) return;
+      elements.preview.textContent = decoded.text;
+      showToast(`Rendered preview failed: ${error.message || error}`, "error");
+    });
   elements.copyJSFuck.hidden = decoded.kind !== "javascript";
   elements.copyInvisible.hidden = decoded.kind !== "javascript";
   elements.runScopeControl.hidden = decoded.kind !== "javascript";
   if (decoded.kind !== "javascript") elements.parentScope.checked = false;
-  elements.run.hidden = !["javascript", "html"].includes(decoded.kind);
+  elements.networkControl.hidden = false;
+  elements.network.checked = false;
+  elements.run.hidden = !["javascript", "markdown", "html"].includes(decoded.kind);
   updateRunMode();
   selectTab("rendered");
   document.title = `ln.kr · ${decoded.kind}`;
@@ -265,15 +304,14 @@ function selectTab (tab) {
 function decodeLocation () {
   let payload = "";
   let alphabet = outputAlphabetASCII;
-  let autoRun = false;
+  let executableKind = "";
 
   try {
     if (window.location.hash.length > 1) {
       let fragment = window.location.hash.slice(1);
-      if (fragment.startsWith("r:")) {
-        autoRun = true;
-        fragment = fragment.slice(2);
-      }
+      const executable = splitExecutableFragment(fragment);
+      executableKind = executable.executableKind;
+      fragment = executable.payload;
       if (fragment.startsWith("q:")) {
         payload = decodeURIComponent(fragment.slice(2));
         alphabet = outputAlphabetQR;
@@ -285,14 +323,21 @@ function decodeLocation () {
 
     if (!payload) return false;
     const decoded = decompressText(payload, alphabet);
-    if (autoRun && decoded.kind !== "javascript") {
-      throw new Error("Auto-run links must contain JavaScript");
+    if (executableKind && decoded.kind !== executableKind) {
+      throw new Error(`The ${executablePrefixForKind(executableKind)} link marker requires ${executableKind}`);
     }
     showViewer(decoded, payload, alphabet);
-    if (autoRun) {
+    if (executableKind === "javascript") {
       elements.parentScope.checked = true;
       updateRunMode();
       window.queueMicrotask(runInParentScope);
+    } else if (["markdown", "html"].includes(executableKind)) {
+      elements.network.checked = true;
+      updateRunMode();
+      window.queueMicrotask(async () => {
+        await currentRender;
+        await runCurrentDocument({ expand: true, scroll: false });
+      });
     }
     return true;
   } catch (error) {
@@ -303,6 +348,7 @@ function decodeLocation () {
 
 async function copyRich () {
   if (!currentDocument) return;
+  await currentRender;
   const html = elements.preview.innerHTML;
   try {
     if (!window.ClipboardItem || !navigator.clipboard?.write) {
@@ -328,15 +374,101 @@ function invisibleJavaScript (source) {
   return `new Proxy({},{get:(_,n)=>eval([...n].map(n=>+("ﾠ">n)).join\`\`.replace(/.{8}/g,n=>String.fromCharCode(+("0b"+n))))}).\n${invisible}`;
 }
 
-function runCurrentDocument () {
+function collectFrameStyles () {
+  const rules = [];
+  for (const sheet of document.styleSheets) {
+    try {
+      for (const rule of sheet.cssRules) rules.push(rule.cssText);
+    } catch {
+      // Every renderer stylesheet is local. Ignore a browser that withholds one.
+    }
+  }
+  rules.push("html,body{min-height:100%;margin:0}");
+  rules.push("body{padding:clamp(1rem,3vw,2.5rem);background:#111512}");
+  rules.push(".frame-preview{min-height:0;padding:0;overflow:visible}");
+  return rules.join("\n");
+}
+
+function documentLinkBootstrap (token, copyCode = false) {
+  const serializedToken = JSON.stringify(token);
+  return `
+(() => {
+  const harden = root => {
+    const links = root.matches?.("a[href]") ? [root] : root.querySelectorAll?.("a[href]") || [];
+    for (const link of links) {
+      if (/^\\s*javascript\\s*:/i.test(link.getAttribute("href") || "")) continue;
+      if (!link.hasAttribute("target")) link.setAttribute("target", "_blank");
+      const rel = new Set((link.getAttribute("rel") || "").split(/\\s+/).filter(Boolean));
+      rel.add("noopener");
+      rel.add("noreferrer");
+      link.setAttribute("rel", Array.from(rel).join(" "));
+    }
+  };
+  addEventListener("DOMContentLoaded", () => harden(document));
+  new MutationObserver(records => {
+    for (const record of records) {
+      for (const node of record.addedNodes) if (node.nodeType === Node.ELEMENT_NODE) harden(node);
+    }
+  }).observe(document.documentElement, { childList: true, subtree: true });
+  ${copyCode ? `document.addEventListener("click", event => {
+    const copy = event.target.closest?.("[data-copy-code]");
+    if (copy) {
+      const block = copy.closest(".code-block, .mermaid-block");
+      const code = block?.querySelector("pre code");
+      if (code) {
+        parent.postMessage({ source: "ln.kr-copy", token: ${serializedToken}, text: code.textContent || "" }, "*");
+        const original = copy.textContent;
+        copy.textContent = "Copied";
+        setTimeout(() => { copy.textContent = original; }, 1200);
+      }
+      return;
+    }
+  });` : ""}
+  harden(document);
+})();`;
+}
+
+function revealRunner ({ expand, scroll }) {
+  if (expand) setRunnerExpanded(true);
+  if (scroll && !elements.runner.classList.contains("runner-expanded")) {
+    window.requestAnimationFrame(() => {
+      elements.runner.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+}
+
+async function runCurrentDocument ({ expand = false, scroll = true } = {}) {
   if (!currentDocument) return;
+  if (currentDocument.kind === "markdown") await currentRender;
   runToken = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
   elements.runner.hidden = false;
   elements.runnerLog.textContent = "";
+  updateRunMode();
 
   const policy = "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'";
   if (currentDocument.kind === "html") {
-    elements.runnerFrame.srcdoc = `<meta http-equiv="Content-Security-Policy" content="${policy}">${currentDocument.text}`;
+    const allowNetwork = elements.network.checked;
+    elements.runnerFrame.setAttribute("sandbox", allowNetwork
+      ? "allow-scripts allow-popups allow-popups-to-escape-sandbox"
+      : "allow-scripts");
+    elements.runnerFrame.srcdoc = allowNetwork
+      ? currentDocument.text
+      : `<meta http-equiv="Content-Security-Policy" content="${policy}"><script>${documentLinkBootstrap(runToken)}<\/script>${currentDocument.text}`;
+    revealRunner({ expand, scroll });
+    return;
+  }
+
+  if (currentDocument.kind === "markdown") {
+    const allowNetwork = elements.network.checked;
+    elements.runnerFrame.setAttribute("sandbox", allowNetwork
+      ? "allow-scripts allow-popups allow-popups-to-escape-sandbox"
+      : "allow-scripts");
+    const meta = allowNetwork
+      ? ""
+      : `<meta http-equiv="Content-Security-Policy" content="${policy}">`;
+    const bootstrap = `<script>${documentLinkBootstrap(runToken, true)}<\/script>`;
+    elements.runnerFrame.srcdoc = `<!doctype html><html><head>${meta}<style>${collectFrameStyles()}</style>${bootstrap}</head><body><article class="preview frame-preview">${elements.preview.innerHTML}</article></body></html>`;
+    revealRunner({ expand, scroll });
     return;
   }
 
@@ -355,14 +487,15 @@ const executable=document.createElement("script");
 executable.textContent=${source};
 document.body.append(executable);
 <\/script>`;
+  revealRunner({ expand, scroll });
 }
 
-function requestRun () {
+async function requestRun () {
   if (currentDocument?.kind === "javascript" && elements.parentScope.checked) {
-    runInParentScope();
+    await runInParentScope();
     return;
   }
-  runCurrentDocument();
+  await runCurrentDocument();
 }
 
 async function runInParentScope () {
@@ -400,7 +533,9 @@ elements.copyLink.addEventListener("click", async () => {
 elements.copyRunLink.addEventListener("click", async () => {
   try {
     await copyText(currentRunLink);
-    showToast("Auto-run link copied");
+    showToast(elements.copyRunLink.dataset.kind === "javascript"
+      ? "Auto-run link copied"
+      : "Live-view link copied");
   } catch (error) {
     showToast(error.message || String(error), "error");
   }
@@ -445,7 +580,10 @@ elements.copyInvisible.addEventListener("click", async () => {
   }
 });
 elements.parentScope.addEventListener("change", updateRunMode);
+elements.network.addEventListener("change", updateRunMode);
 elements.run.addEventListener("click", requestRun);
+elements.expandRun.addEventListener("click", () => setRunnerExpanded(true));
+elements.collapseRun.addEventListener("click", () => setRunnerExpanded(false));
 elements.stopRun.addEventListener("click", stopRunner);
 elements.edit.addEventListener("click", () => {
   const source = currentDocument.text;
@@ -467,12 +605,23 @@ window.addEventListener("message", event => {
   const data = event.data;
   if (
     event.source !== elements.runnerFrame.contentWindow ||
-    !data || data.source !== "ln.kr-runner" || data.token !== runToken
+    !data || data.token !== runToken
   ) return;
+
+  if (data.source === "ln.kr-copy" && typeof data.text === "string") {
+    copyText(data.text).catch(error => showToast(error.message || String(error), "error"));
+    return;
+  }
+  if (data.source !== "ln.kr-runner") return;
   const line = document.createElement("div");
   line.dataset.level = data.level;
   line.textContent = `[${data.level}] ${data.args.join(" ")}`;
   elements.runnerLog.append(line);
+});
+window.addEventListener("keydown", event => {
+  if (event.key === "Escape" && elements.runner.classList.contains("runner-expanded")) {
+    setRunnerExpanded(false);
+  }
 });
 window.addEventListener("hashchange", () => {
   if (window.location.hash) decodeLocation();

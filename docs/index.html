@@ -8,6 +8,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src https: http:; img-src 'self' data: blob: https: http:; media-src data: blob: https: http:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; frame-src 'self' data: blob:; object-src 'none'; base-uri 'self'; form-action 'none'">
   <meta name="description" content="Lossless text and code carried entirely in a link.">
   <title>ln.kr · text in the link</title>
+  <link rel="stylesheet" href="./vendor/github-dark.min.css">
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
@@ -99,7 +100,7 @@
         </div>
         <aside class="scope-note">
           <strong>NOTE</strong>
-          <p><b>Run in parent scope</b> executes shared JavaScript directly on ln.kr with access to this page, its URL, browser APIs, and ordinary network requests. It can replace the interface or navigate away. Leave it unchecked to use the isolated sandbox.</p>
+          <p><b>Run in parent scope</b> executes shared JavaScript directly on ln.kr with access to this page, its URL, browser APIs, and ordinary network requests. It can replace the interface or navigate away. Leave it unchecked to use the isolated sandbox. <b>Allow network requests</b> opens remote resources inside that otherwise unique-origin sandbox.</p>
         </aside>
       </details>
 
@@ -111,6 +112,10 @@
         <label id="run-scope-control" class="action-toggle">
           <input id="run-parent-scope" type="checkbox" autocomplete="off">
           <span>Run in parent scope</span>
+        </label>
+        <label id="network-control" class="action-toggle">
+          <input id="run-network" type="checkbox" autocomplete="off">
+          <span>Allow network requests</span>
         </label>
         <button id="run-code" class="run-button" type="button">Run in sandbox</button>
       </div>
@@ -129,11 +134,15 @@
           <div>
             <span class="live-dot"></span>
             <strong>Isolated preview</strong>
-            <small>Scripts allowed · network blocked · unique origin</small>
+            <small id="runner-status">Scripts allowed · network blocked · unique origin</small>
           </div>
-          <button id="stop-run" type="button">Stop &amp; clear</button>
+          <div class="runner-actions">
+            <button id="expand-run" type="button" aria-expanded="false">Expand viewer</button>
+            <button id="stop-run" type="button">Stop &amp; clear</button>
+            <button id="collapse-run" class="runner-close" type="button" aria-label="Close expanded viewer" hidden>×</button>
+          </div>
         </div>
-        <iframe id="runner-frame" title="Sandboxed code output" sandbox="allow-scripts"></iframe>
+        <iframe id="runner-frame" title="Sandboxed document output" sandbox="allow-scripts"></iframe>
         <div id="runner-log" class="runner-log" aria-live="polite"></div>
       </section>
     </section>
@@ -158,6 +167,8 @@
   </footer>
 
   <div id="toast" class="toast" role="status" hidden></div>
+  <script src="./vendor/marked.umd.js"></script>
+  <script src="./vendor/highlight.min.js"></script>
   <script src="./vendor/jsfuck.js"></script>
   <script type="module" src="./main.js"></script>
 </body>

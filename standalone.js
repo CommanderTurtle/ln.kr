@@ -5,6 +5,7 @@ import {
   outputAlphabetQR
 } from "./docs/alphabets.js";
 import { compressText, decompressText } from "./docs/text-compress.js";
+import { splitExecutableFragment } from "./docs/viewer-runtime.js";
 
 const [, , command, inputArgument, alphabetArgument = "ascii", kind = "auto"] = process.argv;
 
@@ -49,6 +50,7 @@ if (command === "decode") {
     alphabetName = "qr";
   } else if (payload.includes("#")) {
     payload = decodeURIComponent(payload.slice(payload.indexOf("#") + 1));
+    payload = splitExecutableFragment(payload).payload;
     if (Array.from(payload).some(character => !outputAlphabetASCII.includes(character))) {
       alphabetName = "emoji";
     }
