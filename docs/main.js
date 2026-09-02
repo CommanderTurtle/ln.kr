@@ -410,13 +410,40 @@ function documentLinkBootstrap (token, copyCode = false) {
       for (const node of record.addedNodes) if (node.nodeType === Node.ELEMENT_NODE) harden(node);
     }
   }).observe(document.documentElement, { childList: true, subtree: true });
-  ${copyCode ? `document.addEventListener("click", event => {
+  ${copyCode ? `const copyText = async text => {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.append(textarea);
+      textarea.select();
+      try {
+        return document.execCommand("copy");
+      } finally {
+        textarea.remove();
+      }
+    }
+  };
+  document.addEventListener("click", async event => {
     const copy = event.target.closest?.("[data-copy-code]");
     if (copy) {
       const block = copy.closest(".code-block, .mermaid-block");
       const code = block?.querySelector("pre code");
       if (code) {
-        parent.postMessage({ source: "ln.kr-copy", token: ${serializedToken}, text: code.textContent || "" }, "*");
+        const text = code.textContent || "";
+        let copied = false;
+        try {
+          copied = await copyText(text);
+        } catch {
+          copied = false;
+        }
+        if (!copied) {
+          parent.postMessage({ source: "ln.kr-copy", token: ${serializedToken}, text }, "*");
+        }
         const original = copy.textContent;
         copy.textContent = "Copied";
         setTimeout(() => { copy.textContent = original; }, 1200);
