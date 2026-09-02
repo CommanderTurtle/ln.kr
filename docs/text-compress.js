@@ -16,6 +16,12 @@ const MAX_PATCH_RUNS = 128;
 const PATCH_PROBE_STEP = 16;
 const PATCH_COPY_THRESHOLD = 128;
 const PATCH_OFFSETS = Object.freeze([0, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048]);
+const MIN_LEXEME_BYTES = 2;
+const MAX_LEXEME_BYTES = 192;
+const MIN_LEXEME_OCCURRENCES = 3;
+const MAX_LEXICON_ENTRIES = 512;
+const MAX_GRAMMAR_UNITS = 16;
+const GRAMMAR_SEEN_SIZE = 1 << 19;
 
 const KIND_TO_NUMBER = Object.freeze({
   text: 0,
@@ -65,8 +71,9 @@ export const textDictionary = Object.freeze([
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const dictionaryBytes = textDictionary.map(value => encoder.encode(value));
+const dictionaryValues = new Set(textDictionary);
 
-function buildDictionaryTrie () {
+function buildDictionaryTrie (extraEntries = []) {
   const root = { children: new Map(), index: -1 };
   dictionaryBytes.forEach((bytes, index) => {
     let node = root;
@@ -77,6 +84,18 @@ function buildDictionaryTrie () {
       node = node.children.get(byte);
     }
     node.index = index;
+    node.type = "dictionary";
+  });
+  extraEntries.forEach((bytes, index) => {
+    let node = root;
+    for (const byte of bytes) {
+      if (!node.children.has(byte)) {
+        node.children.set(byte, { children: new Map(), index: -1 });
+      }
+      node = node.children.get(byte);
+    }
+    node.index = index;
+    node.type = "lexeme";
   });
   return root;
 }
@@ -123,8 +142,8 @@ function hash4 (bytes, index) {
   );
 }
 
-function findDictionaryMatch (bytes, position) {
-  let node = dictionaryTrie;
+function findDictionaryMatch (bytes, position, trie = dictionaryTrie) {
+  let node = trie;
   let best = null;
 
   for (let index = position; index < bytes.length; index ++) {
@@ -132,10 +151,11 @@ function findDictionaryMatch (bytes, position) {
     if (!node) break;
     if (node.index >= 0) {
       const length = index - position + 1;
-      const bitLength = 2 + gammaBitLength(node.index + 1);
+      const bitLength = (node.type === "lexeme" ? 4 : 2) +
+        gammaBitLength(node.index + 1);
       const savings = length * 8 - bitLength;
       if (savings > 0 && (!best || savings > best.savings)) {
-        best = { index: node.index, length, bitLength, savings };
+        best = { type: node.type, index: node.index, length, bitLength, savings };
       }
     }
   }
@@ -178,9 +198,72 @@ function findCopyMatch (bytes, position, chains) {
 }
 
 function patchBitLength (distance, length, runs, runBits) {
-  return 4 + gammaBitLength(distance) +
+  return 6 + gammaBitLength(distance) +
     gammaBitLength(length - MIN_PATCH + 1) +
     gammaBitLength(runs) + runBits;
+}
+
+function patchShapeKey (token) {
+  return `${token.length}:${token.runs
+    .map(run => `${run.start},${run.bytes.length}`)
+    .join(";")}`;
+}
+
+function patchResidualBytes (token) {
+  return token.runs.reduce((total, run) => total + run.bytes.length, 0);
+}
+
+/**
+ * A full structural delta also defines its run layout. Later deltas with the
+ * same block length and residual positions can reference that layout and send
+ * only a prior-output distance plus their exact changed bytes. This is a
+ * document-local grammar: definitions never leave the payload and decoding
+ * remains a single forward pass.
+ */
+function assignPatchGrammar (tokens) {
+  const definitions = [];
+  const latestDefinition = new Map();
+  let patchDefinition = 0;
+  let patchReuse = 0;
+
+  for (const token of tokens) {
+    if (token.type !== "patch") continue;
+
+    const key = patchShapeKey(token);
+    const previous = latestDefinition.get(key);
+    const fullBits = patchBitLength(
+      token.distance,
+      token.length,
+      token.runs.length,
+      token.runs.reduce((total, run, index) => {
+        const previousEnd = index
+          ? token.runs[index - 1].start + token.runs[index - 1].bytes.length
+          : 0;
+        return total + gammaBitLength(run.start - previousEnd + 1) +
+          gammaBitLength(run.bytes.length) + run.bytes.length * 8;
+      }, 0)
+    );
+
+    if (previous !== undefined) {
+      const templateDistance = definitions.length - previous;
+      const reuseBits = 6 + gammaBitLength(token.distance) +
+        gammaBitLength(templateDistance) + patchResidualBytes(token) * 8;
+      if (reuseBits < fullBits) {
+        token.templateDistance = templateDistance;
+        token.bitLength = reuseBits;
+        patchReuse ++;
+        continue;
+      }
+    }
+
+    delete token.templateDistance;
+    token.bitLength = fullBits;
+    latestDefinition.set(key, definitions.length);
+    definitions.push(key);
+    patchDefinition ++;
+  }
+
+  return { patchDefinition, patchReuse };
 }
 
 function evaluatePatchCandidate (bytes, position, source, legacyCosts) {
@@ -321,15 +404,51 @@ function addChains (bytes, chains, start, end) {
   }
 }
 
-function tokenize (bytes, structured = false, legacyCosts = null) {
+function findLexemePath (bytes, position, trie) {
+  let cursor = position;
+  let first = null;
+  let savings = 0;
+
+  // A long exact copy can begin one space or punctuation byte before a much
+  // cheaper grammar symbol and hide it from a purely greedy parser.  Look
+  // through a few already-cheap prefix tokens.  If their combined guaranteed
+  // saving beats the competing range record, taking the first step is safe;
+  // the lexeme will be reconsidered at the following position.
+  for (let step = 0; step < 4 && cursor < bytes.length; step ++) {
+    const match = findDictionaryMatch(bytes, cursor, trie);
+    if (match?.type === "lexeme") {
+      return { first: first || match, savings: savings + match.savings };
+    }
+
+    let token = match;
+    if (!token) {
+      if (bytes[cursor] >= 128) return null;
+      token = { type: "ascii", byte: bytes[cursor], length: 1, bitLength: 8, savings: 0 };
+    }
+    first ||= token;
+    savings += token.savings;
+    cursor += token.length;
+  }
+  return null;
+}
+
+function tokenize (
+  bytes,
+  structured = false,
+  legacyCosts = null,
+  activeDictionaryTrie = dictionaryTrie
+) {
   const tokens = [];
   const chains = new Map();
   let position = 0;
   let lastPatchProbe = -PATCH_PROBE_STEP;
 
   while (position < bytes.length) {
-    const dictionary = findDictionaryMatch(bytes, position);
+    const dictionary = findDictionaryMatch(bytes, position, activeDictionaryTrie);
     const copy = findCopyMatch(bytes, position, chains);
+    const lexemePath = activeDictionaryTrie === dictionaryTrie
+      ? null
+      : findLexemePath(bytes, position, activeDictionaryTrie);
     let patch = null;
     if (
       structured &&
@@ -341,14 +460,21 @@ function tokenize (bytes, structured = false, legacyCosts = null) {
     }
     const start = position;
 
-    if (patch) {
+    if (patch && (!lexemePath || patch.savings >= lexemePath.savings)) {
       tokens.push({ type: "patch", ...patch });
       position += patch.length;
+    } else if (
+      lexemePath &&
+      (!copy || lexemePath.savings > copy.savings) &&
+      (!dictionary || lexemePath.savings > dictionary.savings)
+    ) {
+      tokens.push(lexemePath.first);
+      position += lexemePath.first.length;
     } else if (copy && (!dictionary || copy.savings > dictionary.savings)) {
       tokens.push({ type: "copy", ...copy });
       position += copy.length;
     } else if (dictionary) {
-      tokens.push({ type: "dictionary", ...dictionary });
+      tokens.push(dictionary);
       position += dictionary.length;
     } else if (bytes[position] < 128) {
       tokens.push({ type: "ascii", byte: bytes[position], length: 1, bitLength: 8 });
@@ -398,6 +524,300 @@ function buildLegacyCostPrefix (byteLength, tokens) {
   return costs;
 }
 
+function hashUnit (value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index ++) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function phrasesCompete (left, right) {
+  if (left.includes(right) || right.includes(left)) return true;
+  const minimum = Math.max(6, Math.ceil(Math.min(left.length, right.length) * 0.6));
+  const maximum = Math.min(left.length, right.length);
+  for (let length = maximum; length >= minimum; length --) {
+    if (
+      left.endsWith(right.slice(0, length)) ||
+      right.endsWith(left.slice(0, length))
+    ) return true;
+  }
+  return false;
+}
+
+function selectLexiconCandidates (candidates, legacyCosts) {
+  const ranked = [];
+  for (const [value, candidate] of candidates) {
+    if (candidate.positions.length < candidate.minimumOccurrences) continue;
+    const baseline = candidate.positions.reduce(
+      (total, start) => total + legacyCosts[start + candidate.bytes.length] - legacyCosts[start],
+      0
+    );
+    const first = candidate.positions[0];
+    const firstOccurrenceCost = legacyCosts[first + candidate.bytes.length] - legacyCosts[first];
+    const definitionCost = gammaBitLength(candidate.bytes.length) +
+      Math.min(candidate.bytes.length * 8, firstOccurrenceCost);
+    const optimisticGain = baseline - candidate.positions.length * 5 - definitionCost;
+    if (optimisticGain > 2) {
+      ranked.push({ ...candidate, value, baseline, definitionCost, optimisticGain });
+    }
+  }
+
+  const byGain = (a, b) =>
+    b.optimisticGain - a.optimisticGain || b.bytes.length - a.bytes.length;
+  ranked.sort(byGain);
+  const guaranteedWords = ranked.filter(candidate => !candidate.phrase).slice(0, 128);
+  const guaranteed = new Set(guaranteedWords);
+  const pool = [
+    ...guaranteedWords,
+    ...ranked.filter(candidate => !guaranteed.has(candidate)).slice(
+      0,
+      MAX_LEXICON_ENTRIES - guaranteedWords.length
+    )
+  ].sort(byGain);
+  const selected = [];
+  for (const candidate of pool) {
+    if (selected.length >= MAX_LEXICON_ENTRIES) break;
+    // Overlapping n-grams otherwise fragment one high-frequency phrase into
+    // dozens of low-frequency one-token extensions.  Keep the best-scoring
+    // member of each nested phrase family; words remain independent symbols.
+    if (
+      candidate.phrase &&
+      selected.some(existing => existing.phrase && phrasesCompete(candidate.value, existing.value))
+    ) continue;
+    const tokenCost = 4 + gammaBitLength(selected.length + 1);
+    const gain = candidate.baseline -
+      candidate.positions.length * tokenCost - candidate.definitionCost;
+    if (gain > 2) selected.push(candidate);
+  }
+  return selected.map(candidate => candidate.bytes);
+}
+
+function collectLexemeCandidates (text, legacyCosts) {
+  const candidates = new Map();
+  const units = [];
+  let byteCursor = 0;
+
+  for (const match of text.matchAll(/([\p{L}\p{N}_$-]+)|(\s+)|([^\p{L}\p{N}_$\s-]+)/gu)) {
+    const value = match[0];
+    const byteLength = /^[\x00-\x7f]*$/.test(value)
+      ? value.length
+      : encoder.encode(value).length;
+    const unit = {
+      value,
+      word: match[1] !== undefined,
+      whitespace: match[2] !== undefined,
+      codeStart: match.index,
+      codeEnd: match.index + value.length,
+      byteStart: byteCursor,
+      byteEnd: byteCursor + byteLength,
+      hash: hashUnit(value)
+    };
+    units.push(unit);
+    byteCursor += byteLength;
+
+    if (
+      !unit.word ||
+      byteLength < MIN_LEXEME_BYTES ||
+      byteLength > MAX_LEXEME_BYTES ||
+      dictionaryValues.has(value)
+    ) continue;
+
+    const candidate = candidates.get(value) || {
+      bytes: encoder.encode(value),
+      positions: [],
+      minimumOccurrences: MIN_LEXEME_OCCURRENCES,
+      phrase: false
+    };
+    candidate.positions.push(unit.byteStart);
+    candidates.set(value, candidate);
+  }
+  const wordLexicon = selectLexiconCandidates(candidates, legacyCosts);
+
+  // A fixed-size first-seen table makes repeated phrase discovery bounded.
+  // It stores only hashes and source offsets; actual strings enter the map
+  // after a second exact occurrence proves that the sector is reusable.
+  const occupied = new Uint8Array(GRAMMAR_SEEN_SIZE);
+  const hashes = new Uint32Array(GRAMMAR_SEEN_SIZE);
+  const firstCodeStart = new Uint32Array(GRAMMAR_SEEN_SIZE);
+  const firstCodeEnd = new Uint32Array(GRAMMAR_SEEN_SIZE);
+  const firstByteStart = new Uint32Array(GRAMMAR_SEEN_SIZE);
+  const seenMask = GRAMMAR_SEEN_SIZE - 1;
+
+  for (let start = 0; start < units.length; start ++) {
+    if (units[start].whitespace) continue;
+    let sequenceHash = 2166136261;
+    let words = 0;
+
+    for (
+      let end = start;
+      end < Math.min(units.length, start + MAX_GRAMMAR_UNITS);
+      end ++
+    ) {
+      const unit = units[end];
+      sequenceHash = Math.imul(sequenceHash ^ unit.hash, 16777619) >>> 0;
+      if (unit.word) words ++;
+      const count = end - start + 1;
+      const byteLength = unit.byteEnd - units[start].byteStart;
+      if (byteLength > MAX_LEXEME_BYTES) break;
+      if (
+        count < 2 ||
+        unit.whitespace ||
+        words === 0 ||
+        byteLength < 6
+      ) continue;
+
+      const hash = Math.imul(sequenceHash ^ count, 2246822519) >>> 0;
+      const slot = hash & seenMask;
+      if (!occupied[slot]) {
+        occupied[slot] = 1;
+        hashes[slot] = hash;
+        firstCodeStart[slot] = units[start].codeStart;
+        firstCodeEnd[slot] = unit.codeEnd;
+        firstByteStart[slot] = units[start].byteStart;
+        continue;
+      }
+      if (hashes[slot] !== hash) continue;
+
+      const value = text.slice(units[start].codeStart, unit.codeEnd);
+      if (text.slice(firstCodeStart[slot], firstCodeEnd[slot]) !== value) continue;
+      if (dictionaryValues.has(value)) continue;
+      const candidate = candidates.get(value) || {
+        bytes: encoder.encode(value),
+        positions: [firstByteStart[slot]],
+        minimumOccurrences: 3,
+        phrase: true
+      };
+      if (candidate.positions.at(-1) !== units[start].byteStart) {
+        candidate.positions.push(units[start].byteStart);
+      }
+      candidate.minimumOccurrences = Math.min(candidate.minimumOccurrences, 3);
+      candidates.set(value, candidate);
+    }
+  }
+
+  return {
+    wordLexicon,
+    combinedLexicon: selectLexiconCandidates(candidates, legacyCosts)
+  };
+}
+
+function pruneLexicon (entries, tokens, legacyCosts) {
+  if (!entries.length) return entries;
+  const gains = new Float64Array(entries.length);
+  const uses = new Uint32Array(entries.length);
+
+  for (const token of tokens) {
+    if (token.type !== "lexeme") continue;
+    uses[token.index] ++;
+    gains[token.index] += legacyCosts[token.start + token.length] - legacyCosts[token.start] -
+      tokenBits(token, STRUCTURED_VERSION).length;
+  }
+
+  return entries.map((entry, index) => {
+    const definitionTokens = tokenize(entry);
+    const definitionBits = definitionTokens.reduce(
+      (total, token) => total + tokenBits(token, LEGACY_VERSION).length,
+      gammaBitLength(entry.length)
+    );
+    return { entry, gain: gains[index], uses: uses[index], definitionBits };
+  }).filter(candidate => candidate.gain > candidate.definitionBits)
+    .sort((a, b) => b.uses - a.uses || b.gain - a.gain || b.entry.length - a.entry.length)
+    .map(candidate => candidate.entry);
+}
+
+function buildLexiconHeaderBits (entries) {
+  let bits = gammaBits(entries.length + 1);
+  let byteLength = 0;
+  for (const entry of entries) {
+    bits += gammaBits(entry.length);
+    byteLength += entry.length;
+  }
+
+  // Definitions are themselves a tiny v1 stream.  A phrase such as an HTML
+  // element or JS statement can therefore be assembled from the same static
+  // words and prior definition ranges instead of paying eight bits for every
+  // byte again.  Entry lengths make the concatenation unambiguous.
+  const definitions = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const entry of entries) {
+    definitions.set(entry, offset);
+    offset += entry.length;
+  }
+  for (const token of tokenize(definitions)) {
+    bits += tokenBits(token, LEGACY_VERSION);
+  }
+  return bits;
+}
+
+function optimizeLexicon (initialLexicon, bytes, legacyCosts, baseline = null) {
+  let lexicon = initialLexicon;
+  let best = baseline?.plan || {
+    tokens: tokenize(bytes, true, legacyCosts, dictionaryTrie),
+    lexicon: []
+  };
+  let bestBits = baseline?.bits ?? structuredPlanBitLength(best);
+
+  for (let pass = 0; pass < 4; pass ++) {
+    const trie = lexicon.length ? buildDictionaryTrie(lexicon) : dictionaryTrie;
+    // Settle the lexical grammar without allowing a large sparse-delta record
+    // to hide all of the words/phrases it spans during admission.  The plan is
+    // still priced with structural records enabled immediately afterwards.
+    const lexicalTokens = tokenize(bytes, false, null, trie);
+    const tokens = tokenize(bytes, true, legacyCosts, trie);
+    const plan = { tokens, lexicon };
+    const bits = structuredPlanBitLength(plan);
+    if (bits < bestBits) {
+      best = plan;
+      bestBits = bits;
+    }
+    const pruned = pruneLexicon(lexicon, lexicalTokens, legacyCosts);
+    if (
+      pruned.length === lexicon.length &&
+      pruned.every((entry, index) => entry === lexicon[index])
+    ) break;
+    lexicon = pruned;
+  }
+
+  return best;
+}
+
+function structuredPlanBitLength (plan) {
+  assignPatchGrammar(plan.tokens);
+  return buildLexiconHeaderBits(plan.lexicon).length + plan.tokens.reduce(
+    (total, token) => total + tokenBits(token, STRUCTURED_VERSION).length,
+    0
+  );
+}
+
+function buildStructuredTokens (text, bytes, legacyCosts) {
+  const candidates = collectLexemeCandidates(text, legacyCosts);
+  const emptyPlan = {
+    tokens: tokenize(bytes, true, legacyCosts, dictionaryTrie),
+    lexicon: []
+  };
+  const emptyBits = structuredPlanBitLength(emptyPlan);
+  const wordPlan = optimizeLexicon(
+    candidates.wordLexicon,
+    bytes,
+    legacyCosts,
+    { plan: emptyPlan, bits: emptyBits }
+  );
+  const wordBits = structuredPlanBitLength(wordPlan);
+
+  // Phrase discovery must earn its keep after definitions, record prefixes,
+  // exact copies, and sparse deltas all compete for the same bytes.  Compare
+  // the two actual v2 streams rather than trusting overlapping optimistic
+  // gains; the cheaper document-local grammar wins deterministically.
+  return optimizeLexicon(
+    candidates.combinedLexicon,
+    bytes,
+    legacyCosts,
+    { plan: wordPlan, bits: wordBits }
+  );
+}
+
 function tokenBits (token, version) {
   if (token.type === "ascii") {
     return "0" + fixedBits(token.byte, 7);
@@ -405,24 +825,33 @@ function tokenBits (token, version) {
   if (token.type === "dictionary") {
     return "10" + gammaBits(token.index + 1);
   }
+  if (token.type === "lexeme") {
+    return "1110" + gammaBits(token.index + 1);
+  }
   if (token.type === "copy") {
     return "110" + gammaBits(token.distance) +
       gammaBits(token.length - MIN_COPY + 1);
   }
   if (token.type === "raw") {
-    let bits = (version === LEGACY_VERSION ? "111" : "1110") +
+    let bits = (version === LEGACY_VERSION ? "111" : "11110") +
       gammaBits(token.bytes.length);
     for (const byte of token.bytes) bits += fixedBits(byte, 8);
     return bits;
   }
   if (token.type === "patch") {
-    let bits = "1111" + gammaBits(token.distance) +
-      gammaBits(token.length - MIN_PATCH + 1) + gammaBits(token.runs.length);
+    let bits = token.templateDistance
+      ? "111111" + gammaBits(token.distance) + gammaBits(token.templateDistance)
+      : "111110" + gammaBits(token.distance) +
+        gammaBits(token.length - MIN_PATCH + 1) + gammaBits(token.runs.length);
     let previousEnd = 0;
+    if (!token.templateDistance) {
+      for (const run of token.runs) {
+        bits += gammaBits(run.start - previousEnd + 1) + gammaBits(run.bytes.length);
+        previousEnd = run.start + run.bytes.length;
+      }
+    }
     for (const run of token.runs) {
-      bits += gammaBits(run.start - previousEnd + 1) + gammaBits(run.bytes.length);
       for (const byte of run.bytes) bits += fixedBits(byte, 8);
-      previousEnd = run.start + run.bytes.length;
     }
     return bits;
   }
@@ -466,6 +895,50 @@ class BitReader {
   }
 }
 
+function decodeLegacySection (reader, expectedLength) {
+  const output = [];
+  const ensureLength = amount => {
+    if (amount < 0 || output.length + amount > expectedLength) {
+      throw new Error("ln.kr grammar definition exceeds its declared byte length");
+    }
+  };
+
+  while (output.length < expectedLength) {
+    if (reader.readBit() === 0) {
+      ensureLength(1);
+      output.push(Number(reader.readFixed(7)));
+      continue;
+    }
+    if (reader.readBit() === 0) {
+      const index = reader.readGamma() - 1;
+      const bytes = dictionaryBytes[index];
+      if (!bytes) throw new Error(`Unknown ln.kr dictionary entry: ${index}`);
+      ensureLength(bytes.length);
+      output.push(...bytes);
+      continue;
+    }
+    if (reader.readBit() === 0) {
+      const distance = reader.readGamma();
+      const length = reader.readGamma() + MIN_COPY - 1;
+      if (distance < 1 || distance > output.length) {
+        throw new Error("Invalid ln.kr grammar definition copy distance");
+      }
+      ensureLength(length);
+      for (let index = 0; index < length; index ++) {
+        output.push(output[output.length - distance]);
+      }
+      continue;
+    }
+
+    const rawLength = reader.readGamma();
+    ensureLength(rawLength);
+    for (let index = 0; index < rawLength; index ++) {
+      output.push(Number(reader.readFixed(8)));
+    }
+  }
+  return output;
+}
+
 export function detectKind (text) {
   if (/<!doctype\s+html|<html[\s>]|<body[\s>]|<div[\s>]/i.test(text)) return "html";
   if (
@@ -482,19 +955,41 @@ export function detectKind (text) {
 function createEncodingPlan (text, kind, version, bytes = null, legacyTokens = null) {
   bytes ||= encoder.encode(text);
   let tokens;
+  let lexicon = [];
   if (version === STRUCTURED_VERSION) {
     legacyTokens ||= tokenize(bytes);
     const legacyCosts = buildLegacyCostPrefix(bytes.length, legacyTokens);
-    tokens = tokenize(bytes, true, legacyCosts);
+    ({ tokens, lexicon } = buildStructuredTokens(text, bytes, legacyCosts));
   } else {
     tokens = tokenize(bytes);
   }
+  const grammarCounts = version === STRUCTURED_VERSION
+    ? assignPatchGrammar(tokens)
+    : { patchDefinition: 0, patchReuse: 0 };
   const checksum = crc32(bytes);
   const lengthBits = gammaBits(bytes.length + 1);
+  const lexiconBits = version === STRUCTURED_VERSION
+    ? buildLexiconHeaderBits(lexicon)
+    : "";
   const tokenSequences = tokens.map(token => tokenBits(token, version));
   const tokenBitLength = tokenSequences.reduce((total, bits) => total + bits.length, 0);
-  const counts = { ascii: 0, dictionary: 0, copy: 0, raw: 0, patch: 0 };
-  for (const token of tokens) counts[token.type] ++;
+  const counts = {
+    ascii: 0,
+    dictionary: 0,
+    lexeme: 0,
+    copy: 0,
+    raw: 0,
+    patch: 0,
+    lexicon: lexicon.length,
+    lexiconUse: 0,
+    ...grammarCounts
+  };
+  for (const token of tokens) {
+    counts[token.type] ++;
+    if (token.type === "lexeme") {
+      counts.lexiconUse ++;
+    }
+  }
 
   return {
     kind,
@@ -502,9 +997,11 @@ function createEncodingPlan (text, kind, version, bytes = null, legacyTokens = n
     bytes,
     tokens,
     tokenSequences,
+    lexicon,
+    lexiconBits,
     checksum,
     lengthBits,
-    bitLength: 16 + 3 + 2 + lengthBits.length + 32 + tokenBitLength,
+    bitLength: 16 + 3 + 2 + lengthBits.length + 32 + lexiconBits.length + tokenBitLength,
     counts
   };
 }
@@ -513,6 +1010,9 @@ function encodePlan (plan, alphabet) {
   let number = 1n;
   for (let index = plan.tokenSequences.length - 1; index >= 0; index --) {
     number = huffmanEncode(number, plan.tokenSequences[index]);
+  }
+  if (plan.version === STRUCTURED_VERSION) {
+    number = huffmanEncode(number, plan.lexiconBits);
   }
 
   const { checksum, lengthBits, kind, version, bytes, tokens, counts } = plan;
@@ -538,17 +1038,6 @@ function encodePlan (plan, alphabet) {
   };
 }
 
-function minimumSymbolsForBitLength (bitLength, alphabetSize) {
-  let number = 1n << BigInt(bitLength);
-  const base = BigInt(alphabetSize);
-  let symbols = 0;
-  while (number > 0) {
-    number = (number - 1n) / base;
-    symbols ++;
-  }
-  return symbols;
-}
-
 function resolveKind (text, requestedKind) {
   if (typeof text !== "string") throw new TypeError("Text must be a string");
   const kind = requestedKind === "auto" ? detectKind(text) : requestedKind;
@@ -562,63 +1051,19 @@ export function compressTextV1 (text, alphabet, requestedKind = "auto") {
   return encodePlan(createEncodingPlan(text, kind, LEGACY_VERSION), alphabet);
 }
 
-/** Structural v2 encoder for diagnostics and format conformance tests. */
+/** Structural v2 encoder, selected explicitly by the caller. */
 export function compressTextV2 (text, alphabet, requestedKind = "auto") {
   const kind = resolveKind(text, requestedKind);
   return encodePlan(createEncodingPlan(text, kind, STRUCTURED_VERSION), alphabet);
 }
 
 /**
- * Compress exact UTF-8 text.  v1 is always planned first; the structural v2
- * candidate is selected only when it has fewer transport symbols and decodes
- * back to the exact source.  Thus optimization cannot enlarge or corrupt a
- * document, and old decoders remain sufficient for every v1-selected link.
+ * Default exact UTF-8 encoder. Structural discovery is deliberately opt-in so
+ * ordinary links retain v1's stable wire format and never pay for a v2 pass.
  * @returns {{payload: string, kind: string, stats: object}}
  */
 export function compressText (text, alphabet, requestedKind = "auto") {
-  const kind = resolveKind(text, requestedKind);
-  const bytes = encoder.encode(text);
-  const legacyPlan = createEncodingPlan(text, kind, LEGACY_VERSION, bytes);
-  if (bytes.length < MIN_PATCH * 2) return encodePlan(legacyPlan, alphabet);
-
-  const structuredPlan = createEncodingPlan(
-    text,
-    kind,
-    STRUCTURED_VERSION,
-    bytes,
-    legacyPlan.tokens
-  );
-  if (
-    structuredPlan.counts.patch === 0 ||
-    structuredPlan.bitLength >= legacyPlan.bitLength
-  ) return encodePlan(legacyPlan, alphabet);
-
-  const structured = encodePlan(structuredPlan, alphabet);
-  const minimumLegacySymbols = minimumSymbolsForBitLength(
-    legacyPlan.bitLength,
-    alphabet.length
-  );
-  let legacy = null;
-  if (structured.stats.symbols >= minimumLegacySymbols) {
-    legacy = encodePlan(legacyPlan, alphabet);
-    if (structured.stats.symbols >= legacy.stats.symbols) return legacy;
-  }
-
-  try {
-    if (decompressText(structured.payload, alphabet).text !== text) {
-      return legacy || encodePlan(legacyPlan, alphabet);
-    }
-  } catch {
-    return legacy || encodePlan(legacyPlan, alphabet);
-  }
-
-  structured.stats.baselineBits = legacyPlan.bitLength;
-  structured.stats.savedBits = legacyPlan.bitLength - structuredPlan.bitLength;
-  if (legacy) {
-    structured.stats.baselineSymbols = legacy.stats.symbols;
-    structured.stats.savedSymbols = legacy.stats.symbols - structured.stats.symbols;
-  }
-  return structured;
+  return compressTextV1(text, alphabet, requestedKind);
 }
 
 /**
@@ -639,6 +1084,36 @@ export function decompressText (payload, alphabet) {
   const expectedLength = reader.readGamma() - 1;
   const expectedChecksum = Number(reader.readFixed(32));
   const output = [];
+  const patchShapes = [];
+  const lexicon = [];
+
+  if (version === STRUCTURED_VERSION) {
+    const count = reader.readGamma() - 1;
+    if (count < 0 || count > MAX_LEXICON_ENTRIES) {
+      throw new Error("Invalid ln.kr structural lexicon size");
+    }
+    let lexiconBytes = 0;
+    const lengths = [];
+    for (let entry = 0; entry < count; entry ++) {
+      const length = reader.readGamma();
+      if (length < MIN_LEXEME_BYTES || length > MAX_LEXEME_BYTES) {
+        throw new Error("Invalid ln.kr structural lexeme length");
+      }
+      lexiconBytes += length;
+      if (lexiconBytes > expectedLength) {
+        throw new Error("ln.kr structural lexicon exceeds the document length");
+      }
+      lengths.push(length);
+    }
+    const definitionBytes = decodeLegacySection(reader, lexiconBytes);
+    let definitionOffset = 0;
+    for (const length of lengths) {
+      lexicon.push(Uint8Array.from(
+        definitionBytes.slice(definitionOffset, definitionOffset + length)
+      ));
+      definitionOffset += length;
+    }
+  }
 
   const ensureLength = amount => {
     if (amount < 0 || output.length + amount > expectedLength) {
@@ -675,30 +1150,72 @@ export function decompressText (payload, alphabet) {
       continue;
     }
 
-    if (version === STRUCTURED_VERSION && reader.readBit() === 1) {
+    if (version === STRUCTURED_VERSION) {
+      if (reader.readBit() === 0) {
+        const index = reader.readGamma() - 1;
+        const bytes = lexicon[index];
+        if (!bytes) throw new Error(`Unknown ln.kr structural lexeme: ${index}`);
+        ensureLength(bytes.length);
+        output.push(...bytes);
+        continue;
+      }
+
+      if (reader.readBit() === 0) {
+        const rawLength = reader.readGamma();
+        ensureLength(rawLength);
+        for (let index = 0; index < rawLength; index ++) {
+          output.push(Number(reader.readFixed(8)));
+        }
+        continue;
+      }
+
+      const reuseShape = reader.readBit() === 1;
       const distance = reader.readGamma();
-      const length = reader.readGamma() + MIN_PATCH - 1;
-      const runCount = reader.readGamma();
+      let length;
+      let shape;
+
+      if (reuseShape) {
+        const templateDistance = reader.readGamma();
+        if (templateDistance < 1 || templateDistance > patchShapes.length) {
+          throw new Error("Invalid ln.kr structural grammar reference");
+        }
+        shape = patchShapes[patchShapes.length - templateDistance];
+        length = shape.length;
+      } else {
+        length = reader.readGamma() + MIN_PATCH - 1;
+      }
+
       if (distance < 1 || distance > output.length || length > distance) {
         throw new Error("Invalid ln.kr structural reference");
-      }
-      if (runCount < 1 || runCount > Math.min(MAX_PATCH_RUNS, length)) {
-        throw new Error("Invalid ln.kr structural residual count");
       }
       ensureLength(length);
       const sourceStart = output.length - distance;
       const block = output.slice(sourceStart, sourceStart + length);
-      let previousEnd = 0;
-      for (let run = 0; run < runCount; run ++) {
-        const start = previousEnd + reader.readGamma() - 1;
-        const runLength = reader.readGamma();
-        if (start < previousEnd || start + runLength > length) {
-          throw new Error("Invalid ln.kr structural residual range");
+
+      if (!reuseShape) {
+        const runCount = reader.readGamma();
+        if (runCount < 1 || runCount > Math.min(MAX_PATCH_RUNS, length)) {
+          throw new Error("Invalid ln.kr structural residual count");
         }
-        for (let index = 0; index < runLength; index ++) {
-          block[start + index] = Number(reader.readFixed(8));
+        const runs = [];
+        let previousEnd = 0;
+        for (let run = 0; run < runCount; run ++) {
+          const start = previousEnd + reader.readGamma() - 1;
+          const runLength = reader.readGamma();
+          if (start < previousEnd || start + runLength > length) {
+            throw new Error("Invalid ln.kr structural residual range");
+          }
+          runs.push({ start, length: runLength });
+          previousEnd = start + runLength;
         }
-        previousEnd = start + runLength;
+        shape = { length, runs };
+        patchShapes.push(shape);
+      }
+
+      for (const run of shape.runs) {
+        for (let index = 0; index < run.length; index ++) {
+          block[run.start + index] = Number(reader.readFixed(8));
+        }
       }
       output.push(...block);
       continue;

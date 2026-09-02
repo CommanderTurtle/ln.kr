@@ -82,22 +82,43 @@ export function numberToString (number, alphabet) {
   const parser = getAlphabetParser(alphabet);
   let string = "";
 
-  while (number > 0) {
-    number --;
-    const digit = Number(number % alphabetSize);
+  const appendDigit = digit => {
     const symbol = alphabet[digit];
 
-    // Some emoji are themselves concatenations of other emoji in the same
-    // alphabet.  A boundary can therefore turn two valid digits into a third,
-    // longer digit.  Frame only those ambiguous boundaries; fixed-width and
-    // already-unambiguous payloads remain byte-for-byte compatible.
-    if (string && parser.matchLast(string + symbol) !== digit) {
+    // Fixed-width alphabets cannot form an ambiguous boundary. Avoid building
+    // a growing temporary string for every ASCII/QR/path digit.
+    if (
+      parser.variableLength &&
+      string &&
+      parser.matchLast((string.slice(-parser.maxSymbolLength) + symbol)
+        .slice(-parser.maxSymbolLength)) !== digit
+    ) {
       if (!parser.separator) {
         throw new Error("Alphabet has an ambiguous boundary and no safe separator");
       }
       string += parser.separator;
     }
     string += symbol;
+  };
+
+  // The representation is bijective base-N: every digit contributes
+  // (digit + 1). Peel several low digits with one large BigInt division while
+  // emitting exactly the same symbols in exactly the same order as ha.mr.
+  while (number >= parser.chunkOffset) {
+    const adjusted = number - parser.chunkOffset;
+    let chunk = Number(adjusted % parser.chunkBase);
+    number = adjusted / parser.chunkBase;
+    for (let index = 0; index < parser.chunkDigits; index ++) {
+      const digit = chunk % alphabet.length;
+      appendDigit(digit);
+      chunk = Math.floor(chunk / alphabet.length);
+    }
+  }
+
+  while (number > 0) {
+    number --;
+    const digit = Number(number % alphabetSize);
+    appendDigit(digit);
     number /= alphabetSize;
   }
 
@@ -123,10 +144,9 @@ function getAlphabetParser (alphabet) {
     if (node.index < 0) node.index = index;
   });
 
-  const matchLast = string => {
+  const matchLast = (string, end = string.length) => {
     let node = root;
     let index = -1;
-    let end = string.length;
 
     while (end > 0) {
       let start = end - 1;
@@ -145,10 +165,36 @@ function getAlphabetParser (alphabet) {
   };
 
   const variableLength = alphabet.some(symbol => Array.from(symbol).length > 1);
+  const maxSymbolLength = Math.max(...alphabet.map(symbol => symbol.length));
   const separator = variableLength
     ? separatorCandidates.find(candidate => alphabet.every(symbol => !symbol.includes(candidate))) || ""
     : "";
-  parser = { matchLast, separator };
+
+  // Keep each numeric chunk exactly representable as a JavaScript Number.
+  // Decoding a k-digit bijective chunk can reach N * (1 + N + ... + N^(k-1)).
+  const alphabetSize = BigInt(alphabet.length);
+  const maximum = BigInt(Number.MAX_SAFE_INTEGER);
+  let chunkBase = 1n;
+  let chunkOffset = 0n;
+  let chunkDigits = 0;
+  while (true) {
+    const nextOffset = chunkOffset + chunkBase;
+    const nextBase = chunkBase * alphabetSize;
+    if (alphabetSize * nextOffset > maximum) break;
+    chunkOffset = nextOffset;
+    chunkBase = nextBase;
+    chunkDigits ++;
+  }
+
+  parser = {
+    matchLast,
+    separator,
+    variableLength,
+    maxSymbolLength,
+    chunkBase,
+    chunkOffset,
+    chunkDigits
+  };
   alphabetParsers.set(alphabet, parser);
   return parser;
 }
@@ -156,20 +202,21 @@ function getAlphabetParser (alphabet) {
 function readAlphabetDigits (string, alphabet, onDigit) {
   const parser = getAlphabetParser(alphabet);
   let count = 0;
+  let end = string.length;
 
-  while (string) {
-    if (parser.separator && string.endsWith(parser.separator)) {
+  while (end > 0) {
+    if (parser.separator && string.endsWith(parser.separator, end)) {
       throw new Error("Invalid alphabet boundary separator");
     }
-    const digit = parser.matchLast(string);
-    if (digit < 0) throw new Error(`Invalid character: "${string.at(-1)}"`);
+    const digit = parser.matchLast(string, end);
+    if (digit < 0) throw new Error(`Invalid character: "${string.slice(0, end).at(-1)}"`);
     onDigit(digit);
     count ++;
-    string = string.slice(0, -alphabet[digit].length);
+    end -= alphabet[digit].length;
 
-    if (parser.separator && string.endsWith(parser.separator)) {
-      string = string.slice(0, -parser.separator.length);
-      if (!string || string.endsWith(parser.separator)) {
+    if (parser.separator && string.endsWith(parser.separator, end)) {
+      end -= parser.separator.length;
+      if (end <= 0 || string.endsWith(parser.separator, end)) {
         throw new Error("Invalid alphabet boundary separator");
       }
     }
@@ -191,7 +238,18 @@ export function countAlphabetSymbols (string, alphabet) {
  */
 export function stringToNumber (string, alphabet) {
   const alphabetSize = BigInt(alphabet.length);
+  const parser = getAlphabetParser(alphabet);
   let number = 0n;
+  let chunk = 0;
+  let chunkDigits = 0;
+
+  const flushChunk = () => {
+    if (!chunkDigits) return;
+    number *= alphabetSize ** BigInt(chunkDigits);
+    number += BigInt(chunk);
+    chunk = 0;
+    chunkDigits = 0;
+  };
 
   // Not all alphabets are 1 byte per character. For example, the emoji
   // alphabet includes some sequences that only make sense in specific
@@ -199,11 +257,11 @@ export function stringToNumber (string, alphabet) {
   // ordered with the longest sequences first (they are), and find the
   // first entry that matches the current position in the string.
   readAlphabetDigits(string, alphabet, value => {
-    const digit = BigInt(value);
-    number *= alphabetSize;
-    number += digit;
-    number ++;
+    chunk = chunk * alphabet.length + value + 1;
+    chunkDigits ++;
+    if (chunkDigits === parser.chunkDigits) flushChunk();
   });
+  flushChunk();
 
   return number;
 }

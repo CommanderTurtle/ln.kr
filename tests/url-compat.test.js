@@ -1,8 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { compress, decompress } from "../docs/compress.js";
+import {
+  compress,
+  decompress,
+  numberToString,
+  stringToNumber
+} from "../docs/compress.js";
 import {
   outputAlphabetASCII,
   outputAlphabetEmoji,
+  outputAlphabetPath,
   outputAlphabetQR
 } from "../docs/alphabets.js";
 
@@ -53,4 +59,33 @@ describe("upstream ha.mr compatibility", () => {
       expect(decompress(fixture.output, fixture.alphabet)).toBe(fixture.decoded);
     });
   }
+
+  test("chunked radix conversion retains ha.mr's exact fixed-alphabet output", () => {
+    const reference = (input, alphabet) => {
+      const base = BigInt(alphabet.length);
+      let number = input;
+      let output = "";
+      while (number > 0n) {
+        number --;
+        output += alphabet[Number(number % base)];
+        number /= base;
+      }
+      return output;
+    };
+
+    let state = 0x29a;
+    for (const alphabet of [outputAlphabetASCII, outputAlphabetQR, outputAlphabetPath]) {
+      for (let sample = 0; sample < 120; sample ++) {
+        let number = 0n;
+        const words = 1 + sample % 24;
+        for (let word = 0; word < words; word ++) {
+          state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+          number = (number << 32n) | BigInt(state);
+        }
+        const encoded = numberToString(number, alphabet);
+        expect(encoded).toBe(reference(number, alphabet));
+        expect(stringToNumber(encoded, alphabet)).toBe(number);
+      }
+    }
+  });
 });

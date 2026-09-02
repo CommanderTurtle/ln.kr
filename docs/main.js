@@ -5,6 +5,7 @@ import {
 } from "./alphabets.js";
 import { countAlphabetSymbols } from "./compress.js";
 import {
+  anchorResolvedHTML,
   decodeLinkTarget,
   encodeDirectLinkTarget,
   encodeLinkTarget,
@@ -13,7 +14,7 @@ import {
   splitLinkFragment
 } from "./link-runtime.js";
 import { decodeDocumentPayload } from "./payload.js";
-import { compressText } from "./text-compress.js";
+import { compressTextV1, compressTextV2 } from "./text-compress.js";
 import { renderContent } from "./render.js";
 import {
   executablePrefixForKind,
@@ -57,6 +58,7 @@ const elements = {
   form: document.querySelector("#composer-form"),
   input: document.querySelector("#source-input"),
   format: document.querySelector("#source-format"),
+  structural: document.querySelector("#setting-structural"),
   emoji: document.querySelector("#setting-emoji"),
   qr: document.querySelector("#setting-qr"),
   sourceCount: document.querySelector("#source-count"),
@@ -178,6 +180,10 @@ function outputLinkURL (payload, mode) {
   return `${rootURL().href}#${linkPrefixForMode(mode)}${payload}`;
 }
 
+function activeTextEncoder () {
+  return elements.structural.checked ? compressTextV2 : compressTextV1;
+}
+
 function resolverOrigin () {
   const root = rootURL();
   if (["localhost", "127.0.0.1", "::1"].includes(root.hostname)) return root.origin;
@@ -240,7 +246,7 @@ async function drawQR () {
 
   try {
     qrModule ||= await import("./lean-qr/lean-qr.js");
-    const encoded = compressText(
+    const encoded = activeTextEncoder()(
       elements.input.value,
       outputAlphabetQR,
       elements.format.value
@@ -324,7 +330,7 @@ async function generateLink () {
 
   try {
     const alphabet = elements.emoji.checked ? outputAlphabetEmoji : outputAlphabetASCII;
-    const encoded = compressText(source, alphabet, elements.format.value);
+    const encoded = activeTextEncoder()(source, alphabet, elements.format.value);
     currentLink = outputURL(encoded.payload);
     currentRunLink = executablePrefixForKind(encoded.kind)
       ? outputURL(encoded.payload, encoded.kind)
@@ -337,11 +343,21 @@ async function generateLink () {
     elements.outputLink.value = currentLink;
     const recordSummary = [
       `${symbols.toLocaleString()} payload symbols`,
+      `format v${encoded.stats.version}`,
       `${encoded.stats.dictionary} dictionary records`,
       `${encoded.stats.copy} repetition records`
     ];
+    if (encoded.stats.lexicon) {
+      recordSummary.push(
+        `${encoded.stats.lexicon} document grammar symbols`,
+        `${encoded.stats.lexiconUse} grammar references`
+      );
+    }
     if (encoded.stats.patch) {
       recordSummary.push(`${encoded.stats.patch} structural delta records`);
+      if (encoded.stats.patchReuse) {
+        recordSummary.push(`${encoded.stats.patchReuse} reused grammar shapes`);
+      }
     }
     recordSummary.push(
       ratio >= 0 ? `${ratio}% fewer symbols than source` : `${-ratio}% more symbols than source`
@@ -453,10 +469,11 @@ async function resolveSourceLink (target, live, generation) {
       headers: { accept: "text/html, application/xhtml+xml, text/plain;q=0.9, */*;q=0.1" }
     });
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`.trim());
-    const source = await response.text();
+    const sourceURL = response.headers.get("x-lnkr-source-url") || target;
+    const source = anchorResolvedHTML(await response.text(), sourceURL);
     if (generation !== sourceResolveGeneration) return;
     await new Promise(resolve => window.requestAnimationFrame(resolve));
-    const encoded = compressText(source, outputAlphabetASCII, "html");
+    const encoded = compressTextV1(source, outputAlphabetASCII, "html");
     if (generation !== sourceResolveGeneration) return;
     history.replaceState(null, "", outputURL(encoded.payload, live ? "html" : ""));
     decodeLocation();
@@ -555,7 +572,7 @@ function imageViewerSource (target) {
 }
 
 function showImageAlias (target) {
-  const virtual = compressText(
+  const virtual = compressTextV1(
     imageViewerSource(directResolverURL(target)),
     outputAlphabetASCII,
     "javascript"
@@ -913,6 +930,9 @@ elements.linkModeToggle.addEventListener("click", () => {
   showComposerMode(linkMode ? "link" : "text");
 });
 elements.input.addEventListener("input", updateSourceCount);
+elements.structural.addEventListener("change", () => {
+  if (!elements.result.hidden) generateLink();
+});
 elements.emoji.addEventListener("change", () => {
   if (!elements.result.hidden) generateLink();
 });

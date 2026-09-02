@@ -60,7 +60,7 @@ same prefix ─ COPY · changed bytes ─ LITERAL/DICT · same suffix ─ COPY
 This makes repeated codeblocks, paragraphs, indentation, and repeated variants
 compact while preserving every differing byte.
 
-## v2 structural deltas
+## v2 document grammar and structural deltas
 
 v2 retains the first three v1 record prefixes. Its `111` branch is extended:
 
@@ -69,16 +69,45 @@ v2 retains the first three v1 record prefixes. Its `111` branch is extended:
 | `0` | One 7-bit ASCII byte |
 | `10` | Elias-gamma dictionary index |
 | `110` | Elias-gamma distance and length for a prior-output copy |
-| `1110` | Elias-gamma length followed by exact 8-bit literal bytes |
-| `1111` | Prior block plus sparse residual runs |
+| `1110` | Elias-gamma document-grammar index |
+| `11110` | Elias-gamma length followed by exact 8-bit literal bytes |
+| `111110` | Prior block plus a newly defined sparse residual shape |
+| `111111` | Prior block plus a previously defined residual shape |
 
-A structural record contains:
+After the CRC and before body records, a v2 payload carries its local grammar:
+
+1. Elias-gamma of `entry count + 1`;
+2. one Elias-gamma byte length for each entry;
+3. all entry bytes concatenated and encoded as a v1 record stream.
+
+The declared lengths split the decoded definition stream back into entries.
+Encoding definitions through v1 lets a phrase reuse the frozen dictionary and
+earlier definition ranges; it does not require the phrase bytes to be repeated
+literally in the header. The combined definition bytes may not exceed the
+document's declared byte length, and every entry is bounded to 2–192 bytes.
+
+The encoder discovers repeated exact words/identifiers and repeated sequences
+of 2–16 generic word, whitespace, and punctuation units. It does not parse a
+programming or markup language. Competing nested phrases are ranked by their
+actual savings, and word-only and word-plus-phrase plans are priced as complete
+v2 streams. Only the smaller v2 grammar is emitted. A short bounded lookahead
+prevents a copy beginning on adjacent whitespace from hiding a cheaper phrase
+symbol one byte later.
+
+A full structural definition contains:
 
 1. the Elias-gamma distance to a fully decoded prior block;
 2. the block length (`length - 32 + 1`, Elias-gamma);
 3. the number of changed runs (Elias-gamma);
-4. for each run, its gap from the previous run, its length, and its exact
-   replacement bytes.
+4. for each run, its gap from the previous run and its length;
+5. the exact replacement bytes for all runs in order.
+
+Each full definition appends `(block length, run starts, run lengths)` to a
+second payload-local table of residual shapes. A reuse record contains the
+prior-output distance, the backward distance to a residual shape, and only the
+exact replacement bytes implied by that shape. This removes repeated
+structural bookkeeping without placing any source-specific dictionary in the
+application.
 
 Let an earlier byte vector be \(B\), a later equal-length vector be \(T\), and
 the ordered sparse residual runs be \(\Delta = \{(s_i, v_i)\}\). Decoding is
@@ -109,11 +138,11 @@ some early or interior bytes changed. Only the strongest candidates receive a
 byte-for-byte residual scan. The candidate must be at least 32 bytes, may use
 at most 128 residual runs, and may never read undecoded future output.
 
-The structural record is compared against the estimated exact v1 record cost
-over the same interval, not against raw bytes. At document level, both plans
-are compared by exact bit length. v2 is selected only when shorter; its output
-is decoded once and compared with the original text before being returned.
-Thus data can form a lossless chain
+Each grammar entry and structural candidate is compared against the estimated
+exact v1 record cost over the same bytes, not merely against raw length. The
+user selects v1 or v2 explicitly; the default path never plans both formats.
+Within v2, candidate grammars compete against other v2 plans only. Thus v2 data
+can form a lossless chain
 
 ```text
 B0 ──Δ1──> B1 ──Δ2──> B2 ──Δ3──> ... ──Δn──> Bn
