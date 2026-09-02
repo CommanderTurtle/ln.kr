@@ -33,20 +33,41 @@ See [FORMAT.md](FORMAT.md) for the wire format.
 
 The generated page provides:
 
-- a safe Markdown preview and an exact-source view;
+- a GFM preview with authored HTML blocks, Mermaid diagrams,
+  syntax highlighting, per-block copy actions, and an exact-source view;
 - **Copy raw** and **Copy rich**;
 - local **Copy JSFuck** and AEM1K-style **Copy invisible** exports for
   JavaScript;
-- an explicit **Run in sandbox** action for JavaScript and HTML;
+- an explicit **Run in sandbox** action for JavaScript, Markdown, and HTML;
+- a default-blocked **Allow network requests** control for sandboxed remote
+  images, frameworks, media, fonts, and fetch/WebSocket calls;
+- automatic page navigation to the isolated preview and a screen-sized **Expand
+  viewer** mode with its own scrolling document;
 - a JSFuck-compatible **Run in parent scope** opt-in for JavaScript;
-- an explicit `#r:` auto-run link for intentionally executable shares.
+- explicit `#r:` JavaScript auto-run and `#m:`/`#h:` live-view links.
 
-Opening an ordinary `#PAYLOAD` link never runs its contents. Markdown HTML is
-treated as text and links are protocol-filtered. Checking the parent-scope
-control makes the Run action immediate, just as on JSFuck. A deliberately
-shared `#r:PAYLOAD` link selects that mode and runs JavaScript on load. The
-default runner remains an `allow-scripts` iframe with a unique origin and a
-network-blocking Content Security Policy. Stopping that runner destroys its
+Opening an ordinary `#PAYLOAD` link does not enter the executable viewer.
+Markdown is parsed as GFM without sanitizing or rewriting authored HTML. This
+preserves README/Obsidian constructs such as images, audio/video players,
+`details`/`summary`, custom schemes, attributes, and embedded markup. The exact
+source remains available through **Source** and **Copy raw**.
+
+For ordinary rendered document links, ln.kr only fills in missing link-opening
+attributes: `target="_blank"` and the `noopener noreferrer` `rel` tokens.
+Existing targets and `rel` tokens are retained, `href` is never filtered or
+removed, and `javascript:` links are not altered. The document runner repeats
+that narrowly scoped behavior for links created later by rendered Markdown or
+by HTML running with network access disabled.
+
+Checking the parent-scope control makes the JavaScript Run action immediate,
+just as on JSFuck. A deliberately shared `#r:PAYLOAD` link selects that mode
+and runs JavaScript on load. `#m:PAYLOAD` and `#h:PAYLOAD` open Markdown and
+HTML in the expanded isolated viewer, with network access enabled so remote
+document assets can render. Network-enabled HTML is assigned to the iframe
+directly from the exact decoded source, without an injected policy or document
+rewriter. The iframe still has a unique sandbox origin. With network disabled,
+the runner adds its network-blocking Content Security Policy and the narrow
+document-link helper described above. Stopping the runner destroys its
 document.
 
 ## Run locally
@@ -101,6 +122,8 @@ The suite covers:
 - exact and sparsely modified repetition;
 - deterministic mixed-Unicode fuzz cases;
 - payload corruption rejection;
+- viewer URL-mode contracts;
+- vendored renderer assets and license copies;
 - vendored JSFuck alphabet and execution.
 
 ## Lineage and licenses
@@ -110,3 +133,7 @@ alphabets, and lean-qr code originate upstream. `docs/vendor/jsfuck.js` is
 JSFuck 0.5.0 by Martin Kleppe and is distributed upstream under the WTFPL.
 The invisible export follows the technique documented at
 <https://aem1k.com/invisible/encoder/>.
+
+The browser-only rich viewer additionally vendors pinned copies of Marked,
+highlight.js, and Mermaid. Their exact versions, upstream links, and license
+files are listed in `docs/vendor/README.md`.
