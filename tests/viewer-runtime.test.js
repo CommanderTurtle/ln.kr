@@ -35,3 +35,13 @@ test("all rich renderer assets and their license copies are vendored", async () 
     expect(await Bun.file(new URL(path, root)).exists()).toBe(true);
   }
 });
+
+test("expanded document codeblocks copy during the iframe click gesture", async () => {
+  const main = await Bun.file(new URL("../docs/main.js", import.meta.url)).text();
+  const html = await Bun.file(new URL("../docs/index.html", import.meta.url)).text();
+
+  expect(html).toContain('allow="clipboard-write"');
+  expect(main).toContain("await navigator.clipboard.writeText(text)");
+  expect(main).toContain('document.execCommand("copy")');
+  expect(main).toContain('source: "ln.kr-copy"');
+});
