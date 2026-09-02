@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
   <meta name="theme-color" content="#111512">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src https: http:; img-src 'self' data: blob: https: http:; media-src data: blob: https: http:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; frame-src 'self' data: blob:; object-src 'none'; base-uri 'self'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src https: http:; img-src 'self' data: blob: https: http:; media-src data: blob: https: http:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; frame-src 'self' data: blob: https: http:; object-src 'none'; base-uri 'self'; form-action 'none'">
   <meta name="description" content="Lossless text and code carried entirely in a link.">
   <title>ln.kr · text in the link</title>
   <link rel="stylesheet" href="./vendor/github-dark.min.css">
@@ -18,8 +18,10 @@
     </a>
     <span class="project-note">(a.shel.sh project)</span>
     <span class="header-rule" aria-hidden="true"></span>
-    <p>text in the link</p>
+    <p id="site-mode-label">text in the link</p>
+    <button id="link-mode-toggle" class="header-button mode-toggle" type="button" aria-pressed="false">Link</button>
     <div class="header-actions">
+      <a class="header-link" href="https://github.com/CommanderTurtle/ln.kr" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
       <button id="about-open" class="header-button" type="button" aria-haspopup="dialog">About</button>
       <a class="header-link" href="https://github.com/p2r3/ha.mr" target="_blank" rel="noopener noreferrer">ha.mr lineage ↗</a>
     </div>
@@ -82,6 +84,76 @@
           <figcaption>QR uses ha.mr’s alphanumeric alphabet and automatic error correction.</figcaption>
         </figure>
       </section>
+    </section>
+
+    <section id="link-composer" class="composer link-composer" hidden>
+      <form id="link-composer-form" class="editor-card">
+        <div class="editor-bar">
+          <label for="link-source-input">Link</label>
+          <span>Original ha.mr URL codec · encoded locally</span>
+        </div>
+        <input id="link-source-input" class="url-input" type="url" inputmode="url"
+          placeholder="https://example.com/path/to/resource.webp" spellcheck="false" autocomplete="url">
+        <div class="controls">
+          <label class="toggle">
+            <input type="checkbox" id="link-setting-emoji" autocomplete="off">
+            <span class="toggle-track" aria-hidden="true"></span>
+            <span>Emoji alphabet</span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="link-setting-qr" autocomplete="off">
+            <span class="toggle-track" aria-hidden="true"></span>
+            <span>Build QR</span>
+          </label>
+          <label id="link-qr-correct-container" class="select-control qr-level" hidden>
+            <span>QR correction</span>
+            <input id="link-qr-correct" type="range" min="0" max="3" step="1" value="1" autocomplete="off">
+            <output id="link-qr-correct-label" for="link-qr-correct">M</output>
+          </label>
+          <button id="create-link-link" class="primary" type="submit">Compress link</button>
+        </div>
+      </form>
+
+      <section id="url-result" class="result-card" aria-live="polite" hidden>
+        <a id="guarded-link-output" class="url-output" target="_blank" rel="noopener"></a>
+        <p id="url-result-meta" class="result-meta"></p>
+        <div class="result-actions">
+          <button id="copy-guarded-link" class="primary" type="button">Copy link</button>
+          <button id="copy-resolved-link" type="button">Copy direct</button>
+          <button id="copy-source-link" type="button">Copy source</button>
+          <button id="copy-live-source-link" type="button">Copy live</button>
+          <button id="copy-image-link" type="button" hidden>Copy image</button>
+        </div>
+        <p id="link-query-warning" class="warning" hidden>Links with several query parameters can compress less efficiently.</p>
+        <figure id="link-qr-wrap" class="qr-wrap" hidden>
+          <canvas id="link-qrcode"></canvas>
+          <figcaption>QR uses ha.mr’s alphanumeric URL alphabet and the selected correction level.</figcaption>
+        </figure>
+      </section>
+    </section>
+
+    <section id="link-gate" class="link-gate" hidden>
+      <div class="linkage-card">
+        <h1>Redirecting to</h1>
+        <a id="link-gate-target" class="link-target" target="_blank" rel="noopener noreferrer"></a>
+        <div class="result-actions">
+          <a id="link-gate-proceed" class="button primary">Yes, redirect me →</a>
+        </div>
+      </div>
+    </section>
+
+    <section id="link-resolved" class="link-resolved" hidden>
+      <div class="linkage-bar">
+        <div>
+          <span id="link-resolved-label" class="eyebrow">Linkage · #lr:</span>
+          <span id="link-resolved-target" class="resolved-target"></span>
+        </div>
+        <div class="result-actions">
+          <button id="link-resolved-copy" type="button">Copy direct</button>
+          <a id="link-resolved-open" class="button" target="_blank" rel="noopener noreferrer">Open directly ↗</a>
+        </div>
+      </div>
+      <iframe id="link-resolved-frame" title="Resolved link source"></iframe>
     </section>
 
     <section id="viewer" class="viewer" hidden>
@@ -163,7 +235,7 @@
   </dialog>
 
   <footer>
-    <span>ln.kr keeps payloads in the fragment—nothing is uploaded.</span>
+    <span>Document payloads stay in fragments—there is no paste database.</span>
     <span>Codec lineage: <a href="https://github.com/p2r3/ha.mr" target="_blank" rel="noopener noreferrer">p2r3/ha.mr</a></span>
   </footer>
 

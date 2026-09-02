@@ -4,6 +4,14 @@ import {
   outputAlphabetQR
 } from "./alphabets.js";
 import { countAlphabetSymbols } from "./compress.js";
+import {
+  decodeLinkTarget,
+  encodeDirectLinkTarget,
+  encodeLinkTarget,
+  isImageLinkTarget,
+  linkPrefixForMode,
+  splitLinkFragment
+} from "./link-runtime.js";
 import { decodeDocumentPayload } from "./payload.js";
 import { compressText } from "./text-compress.js";
 import { renderContent } from "./render.js";
@@ -14,6 +22,37 @@ import {
 
 const elements = {
   composer: document.querySelector("#composer"),
+  linkComposer: document.querySelector("#link-composer"),
+  linkModeToggle: document.querySelector("#link-mode-toggle"),
+  siteModeLabel: document.querySelector("#site-mode-label"),
+  linkForm: document.querySelector("#link-composer-form"),
+  linkInput: document.querySelector("#link-source-input"),
+  linkEmoji: document.querySelector("#link-setting-emoji"),
+  linkCreate: document.querySelector("#create-link-link"),
+  urlResult: document.querySelector("#url-result"),
+  guardedOutput: document.querySelector("#guarded-link-output"),
+  copyGuarded: document.querySelector("#copy-guarded-link"),
+  copyResolved: document.querySelector("#copy-resolved-link"),
+  copySource: document.querySelector("#copy-source-link"),
+  copyLiveSource: document.querySelector("#copy-live-source-link"),
+  copyImage: document.querySelector("#copy-image-link"),
+  urlResultMeta: document.querySelector("#url-result-meta"),
+  linkQueryWarning: document.querySelector("#link-query-warning"),
+  linkQR: document.querySelector("#link-setting-qr"),
+  linkQRLevelContainer: document.querySelector("#link-qr-correct-container"),
+  linkQRLevel: document.querySelector("#link-qr-correct"),
+  linkQRLevelLabel: document.querySelector("#link-qr-correct-label"),
+  linkQRCanvas: document.querySelector("#link-qrcode"),
+  linkQRWrap: document.querySelector("#link-qr-wrap"),
+  linkGate: document.querySelector("#link-gate"),
+  linkGateTarget: document.querySelector("#link-gate-target"),
+  linkGateProceed: document.querySelector("#link-gate-proceed"),
+  linkResolved: document.querySelector("#link-resolved"),
+  linkResolvedLabel: document.querySelector("#link-resolved-label"),
+  linkResolvedTarget: document.querySelector("#link-resolved-target"),
+  linkResolvedCopy: document.querySelector("#link-resolved-copy"),
+  linkResolvedOpen: document.querySelector("#link-resolved-open"),
+  linkResolvedFrame: document.querySelector("#link-resolved-frame"),
   viewer: document.querySelector("#viewer"),
   form: document.querySelector("#composer-form"),
   input: document.querySelector("#source-input"),
@@ -63,12 +102,19 @@ const elements = {
 
 let currentLink = "";
 let currentRunLink = "";
+let currentGuardedLink = "";
+let currentResolvedLink = "";
+let currentSourceLink = "";
+let currentLiveSourceLink = "";
+let currentImageLink = "";
+let currentTarget = "";
 let currentDocument = null;
 let qrModule = null;
 let toastTimer = null;
 let runToken = null;
 let currentRender = Promise.resolve();
 let renderGeneration = 0;
+let sourceResolveGeneration = 0;
 
 function rootURL () {
   const url = new URL(window.location.href);
@@ -128,9 +174,61 @@ function outputURL (payload, executableKind = "") {
   return `${rootURL().href}#${executablePrefixForKind(executableKind)}${payload}`;
 }
 
+function outputLinkURL (payload, mode) {
+  return `${rootURL().href}#${linkPrefixForMode(mode)}${payload}`;
+}
+
+function resolverOrigin () {
+  const root = rootURL();
+  if (["localhost", "127.0.0.1", "::1"].includes(root.hostname)) return root.origin;
+  return "https://lr.a.shel.sh";
+}
+
+function directResolverURL (target) {
+  const encoded = encodeDirectLinkTarget(target);
+  return `${resolverOrigin()}/lr/${encoded.payload}`;
+}
+
+function setHeaderMode (mode) {
+  const linkMode = mode === "link";
+  elements.siteModeLabel.textContent = linkMode ? "link in the link" : "text in the link";
+  elements.linkModeToggle.textContent = linkMode ? "Text" : "Link";
+  elements.linkModeToggle.setAttribute("aria-pressed", String(linkMode));
+}
+
+function hidePrimarySections ({ clearResolvedSource = true } = {}) {
+  stopRunner();
+  elements.composer.hidden = true;
+  elements.linkComposer.hidden = true;
+  elements.viewer.hidden = true;
+  elements.linkGate.hidden = true;
+  elements.linkResolved.hidden = true;
+  if (clearResolvedSource) {
+    elements.linkResolvedFrame.removeAttribute("src");
+  }
+}
+
+function showComposerMode (mode) {
+  hidePrimarySections();
+  const linkMode = mode === "link";
+  setHeaderMode(linkMode ? "link" : "text");
+  elements.linkComposer.hidden = !linkMode;
+  elements.composer.hidden = linkMode;
+  document.title = linkMode ? "ln.kr · link in the link" : "ln.kr · text in the link";
+  window.requestAnimationFrame(() => {
+    (linkMode ? elements.linkInput : elements.input).focus();
+  });
+}
+
 function qrURL (payload) {
   const root = rootURL();
   const path = `${root.pathname}T/${payload}`.toUpperCase();
+  return `HTTPS://${root.host.toUpperCase()}${path}`;
+}
+
+function linkQRURL (payload) {
+  const root = rootURL();
+  const path = `${root.pathname}L/${payload}`.toUpperCase();
   return `HTTPS://${root.host.toUpperCase()}${path}`;
 }
 
@@ -167,6 +265,48 @@ async function drawQR () {
   } catch (error) {
     elements.qrWrap.hidden = true;
     showToast(`QR could not fit this document: ${error.message || error}`, "error");
+  }
+}
+
+async function drawLinkQR (target) {
+  elements.linkQRLevelContainer.hidden = !elements.linkQR.checked;
+  if (!elements.linkQR.checked) {
+    elements.linkQRWrap.hidden = true;
+    return;
+  }
+
+  try {
+    qrModule ||= await import("./lean-qr/lean-qr.js");
+    const encoded = encodeLinkTarget(target, outputAlphabetQR).payload;
+    const link = linkQRURL(encoded);
+    const levels = [
+      qrModule.correction.L,
+      qrModule.correction.M,
+      qrModule.correction.Q,
+      qrModule.correction.H
+    ];
+    const names = ["L", "M", "Q", "H"];
+    const levelIndex = Number(elements.linkQRLevel.value);
+    elements.linkQRLevelLabel.textContent = names[levelIndex];
+    const qr = qrModule.generate(
+      qrModule.mode.alphaNumeric(link),
+      {
+        minVersion: 1,
+        maxVersion: 40,
+        minCorrectionLevel: levels[levelIndex],
+        maxCorrectionLevel: qrModule.correction.H
+      }
+    );
+    qr.toCanvas(elements.linkQRCanvas, {
+      on: [18, 22, 20, 255],
+      off: [244, 247, 243, 255],
+      pad: 2
+    });
+    elements.linkQRCanvas.title = link;
+    elements.linkQRWrap.hidden = false;
+  } catch (error) {
+    elements.linkQRWrap.hidden = true;
+    showToast(`QR could not fit this link: ${error.message || error}`, "error");
   }
 }
 
@@ -225,6 +365,211 @@ async function generateLink () {
   }
 }
 
+async function generateURLLinks () {
+  const source = elements.linkInput.value;
+  if (!source.trim()) {
+    elements.urlResult.hidden = true;
+    showToast("Enter a link first", "error");
+    return;
+  }
+
+  elements.linkCreate.disabled = true;
+  elements.linkCreate.textContent = "Compressing…";
+  await new Promise(resolve => window.requestAnimationFrame(resolve));
+
+  try {
+    const alphabet = elements.linkEmoji.checked ? outputAlphabetEmoji : outputAlphabetASCII;
+    const encoded = encodeLinkTarget(source, alphabet);
+    currentGuardedLink = outputLinkURL(encoded.payload, "guarded");
+    currentResolvedLink = directResolverURL(encoded.target);
+    currentSourceLink = outputLinkURL(encoded.payload, "source");
+    currentLiveSourceLink = outputLinkURL(encoded.payload, "source-live");
+    currentImageLink = outputLinkURL(encoded.payload, "image");
+    currentTarget = encoded.target;
+
+    elements.guardedOutput.textContent = currentGuardedLink;
+    elements.guardedOutput.href = currentGuardedLink;
+    elements.copyImage.hidden = !isImageLinkTarget(encoded.target);
+    elements.linkQueryWarning.hidden = new URL(encoded.target).searchParams.size <= 1;
+
+    const symbols = countAlphabetSymbols(encoded.payload, alphabet);
+    const sourceLength = encoded.target.length;
+    const ratio = sourceLength ? Math.round((1 - symbols / sourceLength) * 100) : 0;
+    elements.urlResultMeta.textContent = ratio > 0
+      ? `Output is ${ratio}% smaller than the input`
+      : ratio < 0
+        ? `Output is ${-ratio}% larger than the input`
+        : "Output is the same length as the input";
+    elements.urlResult.hidden = false;
+    await drawLinkQR(encoded.target);
+  } catch (error) {
+    elements.urlResult.hidden = true;
+    showToast(error.message || String(error), "error");
+  } finally {
+    elements.linkCreate.disabled = false;
+    elements.linkCreate.textContent = "Compress link";
+  }
+}
+
+function showGuardedLink (target) {
+  hidePrimarySections();
+  setHeaderMode("link");
+  currentTarget = target;
+  elements.linkGateTarget.textContent = target;
+  elements.linkGateTarget.href = target;
+  elements.linkGateProceed.href = target;
+  elements.linkGate.hidden = false;
+  document.title = "ln.kr · continue to link";
+}
+
+function showResolvedLink (target) {
+  hidePrimarySections();
+  setHeaderMode("link");
+  currentTarget = target;
+  const direct = directResolverURL(target);
+  elements.linkResolvedLabel.textContent = "Linkage · #lr:";
+  elements.linkResolvedTarget.textContent = target;
+  elements.linkResolvedOpen.href = direct;
+  elements.linkResolvedFrame.src = direct;
+  elements.linkResolved.hidden = false;
+  document.title = "ln.kr · resolved link";
+}
+
+async function resolveSourceLink (target, live, generation) {
+  hidePrimarySections();
+  setHeaderMode("link");
+  currentTarget = target;
+  const direct = directResolverURL(target);
+  elements.linkResolvedLabel.textContent = `Linkage · #${live ? "hs" : "s"}:`;
+  elements.linkResolvedTarget.textContent = target;
+  elements.linkResolvedOpen.href = direct;
+  elements.linkResolvedFrame.src = "about:blank";
+  elements.linkResolved.hidden = false;
+  document.title = "ln.kr · resolving source";
+  showToast("Resolving source…");
+
+  try {
+    const response = await fetch(direct, {
+      headers: { accept: "text/html, application/xhtml+xml, text/plain;q=0.9, */*;q=0.1" }
+    });
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`.trim());
+    const source = await response.text();
+    if (generation !== sourceResolveGeneration) return;
+    await new Promise(resolve => window.requestAnimationFrame(resolve));
+    const encoded = compressText(source, outputAlphabetASCII, "html");
+    if (generation !== sourceResolveGeneration) return;
+    history.replaceState(null, "", outputURL(encoded.payload, live ? "html" : ""));
+    decodeLocation();
+  } catch (error) {
+    if (generation !== sourceResolveGeneration) return;
+    elements.linkResolvedFrame.src = direct;
+    showToast(`Source could not be resolved: ${error.message || error}`, "error");
+  }
+}
+
+function imageViewerSource (target) {
+  return `(function (src) {
+    var d = document,
+    o = d.createElement('div');
+    o.style = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:999999';
+    var box = d.createElement('div');
+    box.style = 'position:relative;width:100%;height:100%;overflow:hidden';
+    var x = d.createElement('button');
+    x.textContent = '✕';
+    x.style = 'position:absolute;top:10px;right:10px;font-size:22px;padding:4px 10px;z-index:10';
+    x.onclick = function () {
+        o.remove();
+    };
+    var zi = d.createElement('button');
+    zi.textContent = '+';
+    zi.style = 'position:absolute;top:10px;left:10px;font-size:22px;padding:4px 10px;z-index:10';
+    var zo = d.createElement('button');
+    zo.textContent = '-';
+    zo.style = 'position:absolute;top:10px;left:60px;font-size:22px;padding:4px 10px;z-index:10';
+    var img = d.createElement('img');
+    img.src = src;
+    var img = d.createElement('img');
+    img.src = src;
+    img.referrerPolicy = 'no-referrer';
+    img.decoding = 'async';
+    img.loading = 'eager';
+    img.style = 'position:absolute;top:0;left:0;transform-origin:0 0;transform:translate(0px,0px) scale(1);cursor:grab';
+    box.appendChild(img);
+    box.appendChild(x);
+    box.appendChild(zi);
+    box.appendChild(zo);
+    o.appendChild(box);
+    d.body.appendChild(o);
+    var scale = 1,
+    tx = 0,
+    ty = 0;
+    function apply() {
+        img.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')';
+    }
+    zi.onclick = function () {
+        scale = Math.min(10, scale * 1.25);
+        apply();
+    };
+    zo.onclick = function () {
+        scale = Math.max(0.1, scale / 1.25);
+        apply();
+    };
+    var drag = false,
+    px = 0,
+    py = 0;
+    box.addEventListener('mousedown', e => {
+        drag = true;
+        img.style.cursor = 'grabbing';
+        px = e.clientX;
+        py = e.clientY;
+    });
+    box.addEventListener('mouseup', () => {
+        drag = false;
+        img.style.cursor = 'grab';
+    });
+    box.addEventListener('mouseleave', () => {
+        drag = false;
+        img.style.cursor = 'grab';
+    });
+    box.addEventListener('mousemove', e => {
+        if (!drag)
+            return;
+        tx += e.clientX - px;
+        ty += e.clientY - py;
+        px = e.clientX;
+        py = e.clientY;
+        apply();
+    });
+    box.addEventListener('wheel', e => {
+        e.preventDefault();
+        var rect = box.getBoundingClientRect(),
+        cx = e.clientX - rect.left,
+        cy = e.clientY - rect.top,
+        old = scale;
+        scale = e.deltaY < 0 ? Math.min(10, scale * 1.1) : Math.max(0.1, scale / 1.1);
+        tx = cx - (cx - tx) * (scale / old);
+        ty = cy - (cy - ty) * (scale / old);
+        apply();
+    });
+})(${JSON.stringify(target)});`;
+}
+
+function showImageAlias (target) {
+  const virtual = compressText(
+    imageViewerSource(directResolverURL(target)),
+    outputAlphabetASCII,
+    "javascript"
+  );
+  const { decoded, payload, alphabet } = decodeDocumentPayload(
+    virtual.payload,
+    outputAlphabetASCII
+  );
+  showViewer(decoded, payload, alphabet);
+  elements.parentScope.checked = true;
+  updateRunMode();
+  window.queueMicrotask(runInParentScope);
+}
+
 function setRunnerExpanded (expanded) {
   elements.runner.classList.toggle("runner-expanded", expanded);
   document.body.classList.toggle("runner-is-expanded", expanded);
@@ -256,9 +601,9 @@ function updateRunMode () {
 }
 
 function showViewer (decoded, payload, alphabet) {
+  hidePrimarySections();
   currentDocument = decoded;
-  stopRunner();
-  elements.composer.hidden = true;
+  setHeaderMode("text");
   elements.viewer.hidden = false;
   elements.viewerKind.textContent = decoded.kind;
   const symbolCount = countAlphabetSymbols(payload, alphabet);
@@ -293,6 +638,7 @@ function selectTab (tab) {
 }
 
 function decodeLocation () {
+  const navigationGeneration = ++sourceResolveGeneration;
   let fragment = "";
   let alphabetHint = null;
   let executableKind = "";
@@ -300,6 +646,24 @@ function decodeLocation () {
   try {
     if (window.location.hash.length > 1) {
       fragment = window.location.hash.slice(1);
+
+      const linkage = splitLinkFragment(fragment);
+      if (linkage.mode) {
+        fragment = linkage.payload;
+        if (fragment.startsWith("q:")) {
+          fragment = fragment.slice(2);
+          alphabetHint = outputAlphabetQR;
+        }
+        const { target } = decodeLinkTarget(fragment, alphabetHint);
+        if (linkage.mode === "resolved") showResolvedLink(target);
+        else if (linkage.mode === "image") showImageAlias(target);
+        else if (linkage.mode === "source" || linkage.mode === "source-live") {
+          void resolveSourceLink(target, linkage.mode === "source-live", navigationGeneration);
+        }
+        else showGuardedLink(target);
+        return true;
+      }
+
       const executable = splitExecutableFragment(fragment);
       executableKind = executable.executableKind;
       fragment = executable.payload;
@@ -310,7 +674,16 @@ function decodeLocation () {
     }
 
     if (!fragment) return false;
-    const { decoded, payload, alphabet } = decodeDocumentPayload(fragment, alphabetHint);
+    let documentPayload;
+    try {
+      documentPayload = decodeDocumentPayload(fragment, alphabetHint);
+    } catch (documentError) {
+      if (executableKind || alphabetHint) throw documentError;
+      const { target } = decodeLinkTarget(fragment);
+      showGuardedLink(target);
+      return true;
+    }
+    const { decoded, payload, alphabet } = documentPayload;
     if (executableKind && decoded.kind !== executableKind) {
       throw new Error(`The ${executablePrefixForKind(executableKind)} link marker requires ${executableKind}`);
     }
@@ -329,7 +702,7 @@ function decodeLocation () {
     }
     return true;
   } catch (error) {
-    showToast(`This link is not a valid ln.kr document: ${error.message || error}`, "error");
+    showToast(`This is not a valid ln.kr payload: ${error.message || error}`, "error");
     return false;
   }
 }
@@ -530,12 +903,33 @@ elements.form.addEventListener("submit", event => {
   event.preventDefault();
   generateLink();
 });
+elements.linkForm.addEventListener("submit", event => {
+  event.preventDefault();
+  generateURLLinks();
+});
+elements.linkModeToggle.addEventListener("click", () => {
+  const linkMode = elements.linkModeToggle.getAttribute("aria-pressed") !== "true";
+  history.replaceState(null, "", rootURL());
+  showComposerMode(linkMode ? "link" : "text");
+});
 elements.input.addEventListener("input", updateSourceCount);
 elements.emoji.addEventListener("change", () => {
   if (!elements.result.hidden) generateLink();
 });
 elements.qr.addEventListener("change", () => {
   if (!elements.result.hidden) generateLink();
+});
+elements.linkEmoji.addEventListener("change", () => {
+  if (!elements.urlResult.hidden) generateURLLinks();
+});
+elements.linkQR.addEventListener("change", () => {
+  elements.linkQRLevelContainer.hidden = !elements.linkQR.checked;
+  if (!elements.urlResult.hidden) drawLinkQR(currentTarget);
+});
+elements.linkQRLevel.addEventListener("input", () => {
+  const names = ["L", "M", "Q", "H"];
+  elements.linkQRLevelLabel.textContent = names[Number(elements.linkQRLevel.value)];
+  if (!elements.urlResult.hidden && elements.linkQR.checked) drawLinkQR(currentTarget);
 });
 elements.copyLink.addEventListener("click", async () => {
   try {
@@ -551,6 +945,54 @@ elements.copyRunLink.addEventListener("click", async () => {
     showToast(elements.copyRunLink.dataset.kind === "javascript"
       ? "Auto-run link copied"
       : "Live-view link copied");
+  } catch (error) {
+    showToast(error.message || String(error), "error");
+  }
+});
+elements.copyGuarded.addEventListener("click", async () => {
+  try {
+    await copyText(currentGuardedLink);
+    showToast("Guarded link copied");
+  } catch (error) {
+    showToast(error.message || String(error), "error");
+  }
+});
+elements.copyResolved.addEventListener("click", async () => {
+  try {
+    await copyText(currentResolvedLink);
+    showToast("Direct source copied");
+  } catch (error) {
+    showToast(error.message || String(error), "error");
+  }
+});
+elements.copySource.addEventListener("click", async () => {
+  try {
+    await copyText(currentSourceLink);
+    showToast("Editable source link copied");
+  } catch (error) {
+    showToast(error.message || String(error), "error");
+  }
+});
+elements.copyLiveSource.addEventListener("click", async () => {
+  try {
+    await copyText(currentLiveSourceLink);
+    showToast("Live source link copied");
+  } catch (error) {
+    showToast(error.message || String(error), "error");
+  }
+});
+elements.copyImage.addEventListener("click", async () => {
+  try {
+    await copyText(currentImageLink);
+    showToast("Image link copied");
+  } catch (error) {
+    showToast(error.message || String(error), "error");
+  }
+});
+elements.linkResolvedCopy.addEventListener("click", async () => {
+  try {
+    await copyText(elements.linkResolvedFrame.src);
+    showToast("Direct source copied");
   } catch (error) {
     showToast(error.message || String(error), "error");
   }
@@ -603,15 +1045,11 @@ elements.stopRun.addEventListener("click", stopRunner);
 elements.edit.addEventListener("click", () => {
   const source = currentDocument.text;
   const kind = currentDocument.kind;
-  stopRunner();
   history.replaceState(null, "", rootURL());
-  elements.viewer.hidden = true;
-  elements.composer.hidden = false;
   elements.input.value = source;
   elements.format.value = kind;
   updateSourceCount();
-  elements.input.focus();
-  document.title = "ln.kr · text in the link";
+  showComposerMode("text");
 });
 elements.aboutOpen.addEventListener("click", () => openDialog(elements.aboutDialog));
 elements.aboutClose.addEventListener("click", () => closeDialog(elements.aboutDialog));
@@ -640,11 +1078,11 @@ window.addEventListener("keydown", event => {
 });
 window.addEventListener("hashchange", () => {
   if (window.location.hash) decodeLocation();
+  else showComposerMode("text");
 });
 
 if (!decodeLocation()) {
-  elements.composer.hidden = false;
-  elements.viewer.hidden = true;
   elements.format.value = "auto";
   updateSourceCount();
+  showComposerMode("text");
 }

@@ -12,12 +12,17 @@
 <body>
   <p>Opening ln.kr document…</p>
   <script>
-    const marker = "/T/";
-    const markerIndex = location.pathname.toUpperCase().indexOf(marker);
-    if (markerIndex >= 0) {
+    const routes = [
+      { marker: "/L/", prefix: "l:q:" },
+      { marker: "/T/", prefix: "q:" }
+    ];
+    const upperPath = location.pathname.toUpperCase();
+    const route = routes.find(candidate => upperPath.includes(candidate.marker));
+    if (route) {
+      const markerIndex = upperPath.indexOf(route.marker);
       const base = location.pathname.slice(0, markerIndex + 1);
-      const payload = location.pathname.slice(markerIndex + marker.length);
-      location.replace(`${base}#q:${encodeURIComponent(payload)}`);
+      const payload = location.pathname.slice(markerIndex + route.marker.length);
+      location.replace(`${base}#${route.prefix}${encodeURIComponent(payload)}`);
     } else {
       const base = location.pathname.replace(/[^/]*$/, "");
       location.replace(base || "/");
