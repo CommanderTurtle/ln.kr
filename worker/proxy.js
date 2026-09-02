@@ -24,7 +24,7 @@ const corsHeaders = Object.freeze({
   "access-control-allow-headers": "Accept, Range, If-Range, If-None-Match, If-Modified-Since",
   "access-control-allow-methods": "GET, HEAD, OPTIONS",
   "access-control-allow-origin": "*",
-  "access-control-expose-headers": "Accept-Ranges, Cache-Control, Content-Length, Content-Range, Content-Type, ETag, Last-Modified",
+  "access-control-expose-headers": "Accept-Ranges, Cache-Control, Content-Length, Content-Range, Content-Type, ETag, Last-Modified, X-Lnkr-Source-URL",
   "access-control-max-age": "86400"
 });
 
@@ -122,7 +122,7 @@ function upstreamRequestHeaders (request) {
   return headers;
 }
 
-function proxyResponseHeaders (upstream) {
+function proxyResponseHeaders (upstream, sourceURL) {
   const headers = new Headers(upstream.headers);
   for (const name of HOP_BY_HOP_HEADERS) headers.delete(name);
   headers.delete("set-cookie");
@@ -138,6 +138,7 @@ function proxyResponseHeaders (upstream) {
   headers.set("cross-origin-resource-policy", "cross-origin");
   headers.set("referrer-policy", "no-referrer");
   headers.set("x-content-type-options", "nosniff");
+  headers.set("x-lnkr-source-url", sourceURL);
   return headers;
 }
 
@@ -196,7 +197,7 @@ export async function handleResolverRequest (
       return new Response(request.method === "HEAD" ? null : upstream.body, {
         status: upstream.status,
         statusText: upstream.statusText,
-        headers: proxyResponseHeaders(upstream)
+        headers: proxyResponseHeaders(upstream, target.href)
       });
     }
   } catch (error) {

@@ -29,6 +29,7 @@ describe("stateless direct resolver", () => {
     expect(response.headers.get("content-type")).toBe("image/webp");
     expect(response.headers.get("content-range")).toBe("bytes 0-6/7");
     expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    expect(response.headers.get("x-lnkr-source-url")).toBe("https://images.example/source.webp");
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(expected);
   });
 
@@ -95,6 +96,29 @@ describe("stateless direct resolver", () => {
     expect(response.status).toBe(502);
     expect(await response.text()).toContain("Private and local network targets");
     expect(calls).toBe(1);
+  });
+
+  test("reports the final public URL after redirects", async () => {
+    let calls = 0;
+    const response = await handleResolverRequest(
+      requestFor("https://public.example/start"),
+      {
+        fetchImpl: async target => {
+          calls ++;
+          if (calls === 1) {
+            return new Response(null, {
+              status: 302,
+              headers: { location: "/reports/final.html" }
+            });
+          }
+          expect(String(target)).toBe("https://public.example/reports/final.html");
+          return new Response("ok", { headers: { "content-type": "text/html" } });
+        }
+      }
+    );
+
+    expect(response.headers.get("x-lnkr-source-url"))
+      .toBe("https://public.example/reports/final.html");
   });
 
   test("passes cache validation responses through without treating them as redirects", async () => {

@@ -87,12 +87,62 @@ describe("ln.kr exact text codec", () => {
       }
     }, null, 2)).join("\n");
     const legacy = compressTextV1(source, outputAlphabetASCII, "text");
-    const encoded = compressText(source, outputAlphabetASCII, "text");
+    const encoded = compressTextV2(source, outputAlphabetASCII, "text");
 
     expect(encoded.stats.version).toBe(2);
     expect(encoded.stats.patch).toBeGreaterThan(0);
     expect(encoded.payload.length).toBeLessThan(legacy.payload.length);
     expect(decompressText(encoded.payload, outputAlphabetASCII).text).toBe(source);
+  });
+
+  test("reuses recurring structural layouts as document-local grammar shapes", () => {
+    const source = Array.from({ length: 180 }, (_, index) => [
+      `.card-${index} {`,
+      "  display: grid;",
+      "  grid-template-columns: 1fr auto;",
+      "  align-items: center;",
+      `  --accent: hsl(${index % 360} 70% 50%);`,
+      `  padding: ${8 + index % 4}px;`,
+      "  border: 1px solid var(--accent);",
+      "}"
+    ].join("\n")).join("\n\n");
+    const legacy = compressTextV1(source, outputAlphabetASCII, "text");
+    const encoded = compressTextV2(source, outputAlphabetASCII, "text");
+
+    expect(encoded.stats.patchReuse).toBeGreaterThan(0);
+    expect(encoded.stats.patchDefinition + encoded.stats.patchReuse)
+      .toBe(encoded.stats.patch);
+    expect(encoded.payload.length).toBeLessThan(legacy.payload.length);
+    expect(decompressText(encoded.payload, outputAlphabetASCII).text).toBe(source);
+  });
+
+  test("maps recurring word and punctuation phrases to a local grammar symbol", () => {
+    let state = 0x12345678;
+    const random = () => {
+      state ^= state << 13;
+      state ^= state >>> 17;
+      state ^= state << 5;
+      return state >>> 0;
+    };
+    const noise = length => Array.from(
+      { length },
+      () => String.fromCharCode(33 + ((random() >>> 16) % 90))
+    ).join("");
+    const phrase = "alpha beta gamma delta epsilon zeta theta";
+    const source = Array.from(
+      { length: 50 },
+      () => `${noise(30)} ${phrase} ${noise(30)}`
+    ).join("\n");
+    const legacy = compressTextV1(source, outputAlphabetASCII, "text");
+    for (const alphabet of [outputAlphabetASCII, outputAlphabetEmoji, outputAlphabetQR]) {
+      const encoded = compressTextV2(source, alphabet, "text");
+      expect(encoded.stats.lexicon).toBeGreaterThan(0);
+      expect(encoded.stats.lexiconUse).toBeGreaterThanOrEqual(45);
+      expect(decompressText(encoded.payload, alphabet).text).toBe(source);
+      if (alphabet === outputAlphabetASCII) {
+        expect(encoded.payload.length).toBeLessThan(legacy.payload.length);
+      }
+    }
   });
 
   test("decodes chained structural generations through every transport alphabet", () => {
@@ -164,8 +214,10 @@ describe("ln.kr exact text codec", () => {
       }
       const encoded = compressText(source, outputAlphabetASCII, "text");
       const legacy = compressTextV1(source, outputAlphabetASCII, "text");
+      const structured = compressTextV2(source, outputAlphabetASCII, "text");
       expect(encoded.payload.length).toBeLessThanOrEqual(legacy.payload.length);
       expect(decompressText(encoded.payload, outputAlphabetASCII).text).toBe(source);
+      expect(decompressText(structured.payload, outputAlphabetASCII).text).toBe(source);
     }
   });
 });
