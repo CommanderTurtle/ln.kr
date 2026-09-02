@@ -5,7 +5,12 @@ import {
   outputAlphabetQR
 } from "../docs/alphabets.js";
 import {
+  countAlphabetSymbols
+} from "../docs/compress.js";
+import {
   compressText,
+  compressTextV1,
+  compressTextV2,
   decompressText,
   detectKind,
   textDictionary
@@ -28,6 +33,14 @@ const exactInputs = [
 describe("ln.kr exact text codec", () => {
   test("keeps every versioned dictionary entry unique", () => {
     expect(new Set(textDictionary).size).toBe(textDictionary.length);
+  });
+
+  test("keeps the frozen v1 text stream byte-for-byte compatible", () => {
+    expect(compressTextV1(
+      "const answer = 42;",
+      outputAlphabetASCII,
+      "javascript"
+    ).payload).toBe("_/7KJ?mPwor/O=(ew=v,a2hf*");
   });
 
   for (const alphabet of [outputAlphabetASCII, outputAlphabetEmoji, outputAlphabetQR]) {
@@ -57,8 +70,68 @@ describe("ln.kr exact text codec", () => {
       "}"
     ].join("\n")).join("\n\n");
     const encoded = compressText(source, outputAlphabetASCII, "javascript");
-    expect(encoded.stats.copy).toBeGreaterThan(20);
+    expect(encoded.stats.copy + encoded.stats.patch).toBeGreaterThan(20);
     expect(decompressText(encoded.payload, outputAlphabetASCII).text).toBe(source);
+  });
+
+  test("uses one exact structural record for a prior block plus sparse residuals", () => {
+    const source = Array.from({ length: 120 }, (_, index) => JSON.stringify({
+      id: index,
+      component: "generic-workflow-node",
+      position: [index % 12, Math.floor(index / 12)],
+      options: {
+        enabled: index % 7 !== 0,
+        sampler: "shared-sampler",
+        path: "models/shared/model.safetensors",
+        values: Array.from({ length: 10 }, (__, value) => value === index % 10 ? index : value)
+      }
+    }, null, 2)).join("\n");
+    const legacy = compressTextV1(source, outputAlphabetASCII, "text");
+    const encoded = compressText(source, outputAlphabetASCII, "text");
+
+    expect(encoded.stats.version).toBe(2);
+    expect(encoded.stats.patch).toBeGreaterThan(0);
+    expect(encoded.payload.length).toBeLessThan(legacy.payload.length);
+    expect(decompressText(encoded.payload, outputAlphabetASCII).text).toBe(source);
+  });
+
+  test("decodes chained structural generations through every transport alphabet", () => {
+    const source = Array.from({ length: 80 }, (_, index) => [
+      `section-${index} {`,
+      "  display: grid;",
+      "  grid-template-columns: 1fr auto;",
+      `  color: rgb(${index % 255} 80 120);`,
+      `  padding: ${8 + index % 4}px;`,
+      "  border: 1px solid currentColor;",
+      "}"
+    ].join("\n")).join("\n\n");
+
+    for (const alphabet of [outputAlphabetASCII, outputAlphabetEmoji, outputAlphabetQR]) {
+      const encoded = compressTextV2(source, alphabet, "text");
+      expect(encoded.stats.patch).toBeGreaterThan(1);
+      expect(decompressText(encoded.payload, alphabet).text).toBe(source);
+    }
+  });
+
+  test("frames only ambiguous emoji boundaries and counts them as digits", () => {
+    let state = 1;
+    const pieces = ["a", " ", "\n", "{}", "🐢", "界", "é", "☝", "🏻"];
+    let foundFraming = false;
+
+    for (let sample = 0; sample < 400; sample ++) {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      let source = "";
+      for (let index = 0; index < 20 + state % 180; index ++) {
+        state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+        source += pieces[state % pieces.length];
+      }
+      const encoded = compressTextV1(source, outputAlphabetEmoji, "text");
+      foundFraming ||= encoded.payload.includes(".");
+      expect(countAlphabetSymbols(encoded.payload, outputAlphabetEmoji)).toBe(encoded.stats.symbols);
+      expect(decompressText(encoded.payload, outputAlphabetEmoji).text).toBe(source);
+    }
+
+    expect(foundFraming).toBe(true);
   });
 
   test("detects supported display modes", () => {
@@ -90,6 +163,8 @@ describe("ln.kr exact text codec", () => {
         source += pieces[random() % pieces.length];
       }
       const encoded = compressText(source, outputAlphabetASCII, "text");
+      const legacy = compressTextV1(source, outputAlphabetASCII, "text");
+      expect(encoded.payload.length).toBeLessThanOrEqual(legacy.payload.length);
       expect(decompressText(encoded.payload, outputAlphabetASCII).text).toBe(source);
     }
   });

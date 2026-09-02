@@ -3,7 +3,9 @@ import {
   outputAlphabetEmoji,
   outputAlphabetQR
 } from "./alphabets.js";
-import { compressText, decompressText } from "./text-compress.js";
+import { countAlphabetSymbols } from "./compress.js";
+import { decodeDocumentPayload } from "./payload.js";
+import { compressText } from "./text-compress.js";
 import { renderContent } from "./render.js";
 import {
   executablePrefixForKind,
@@ -76,17 +78,6 @@ function rootURL () {
     url.pathname = url.pathname.replace(/[^/]*$/, "");
   }
   return url;
-}
-
-function countSymbols (string, alphabet) {
-  let count = 0;
-  while (string) {
-    const symbol = alphabet.find(value => string.endsWith(value));
-    if (!symbol) throw new Error("Payload contains a symbol outside its alphabet");
-    string = string.slice(0, -symbol.length);
-    count ++;
-  }
-  return count;
 }
 
 function showToast (message, tone = "ok") {
@@ -198,18 +189,24 @@ async function generateLink () {
     currentRunLink = executablePrefixForKind(encoded.kind)
       ? outputURL(encoded.payload, encoded.kind)
       : "";
-    const symbols = countSymbols(encoded.payload, alphabet);
+    const symbols = countAlphabetSymbols(encoded.payload, alphabet);
     const ratio = source.length
       ? Math.round((1 - symbols / source.length) * 100)
       : 0;
 
     elements.outputLink.value = currentLink;
-    elements.resultMeta.textContent = [
+    const recordSummary = [
       `${symbols.toLocaleString()} payload symbols`,
       `${encoded.stats.dictionary} dictionary records`,
-      `${encoded.stats.copy} repetition records`,
+      `${encoded.stats.copy} repetition records`
+    ];
+    if (encoded.stats.patch) {
+      recordSummary.push(`${encoded.stats.patch} structural delta records`);
+    }
+    recordSummary.push(
       ratio >= 0 ? `${ratio}% fewer symbols than source` : `${-ratio}% more symbols than source`
-    ].join(" · ");
+    );
+    elements.resultMeta.textContent = recordSummary.join(" · ");
     elements.resultWarning.hidden = currentLink.length <= 8000;
     elements.openLink.href = currentLink;
     elements.copyRunLink.hidden = !currentRunLink;
@@ -226,12 +223,6 @@ async function generateLink () {
     elements.create.disabled = false;
     elements.create.textContent = "Create ln.kr link";
   }
-}
-
-function alphabetFromFragment (payload) {
-  return Array.from(payload).some(character => !outputAlphabetASCII.includes(character))
-    ? outputAlphabetEmoji
-    : outputAlphabetASCII;
 }
 
 function setRunnerExpanded (expanded) {
@@ -270,7 +261,7 @@ function showViewer (decoded, payload, alphabet) {
   elements.composer.hidden = true;
   elements.viewer.hidden = false;
   elements.viewerKind.textContent = decoded.kind;
-  const symbolCount = countSymbols(payload, alphabet);
+  const symbolCount = countAlphabetSymbols(payload, alphabet);
   elements.viewerMeta.textContent = `${decoded.text.length.toLocaleString()} characters · ${symbolCount.toLocaleString()} link symbols · format v${decoded.version}`;
   elements.viewerSummary.textContent = `${decoded.kind} · ${decoded.text.length.toLocaleString()} characters · format v${decoded.version}`;
   elements.sourceView.textContent = decoded.text;
@@ -302,27 +293,24 @@ function selectTab (tab) {
 }
 
 function decodeLocation () {
-  let payload = "";
-  let alphabet = outputAlphabetASCII;
+  let fragment = "";
+  let alphabetHint = null;
   let executableKind = "";
 
   try {
     if (window.location.hash.length > 1) {
-      let fragment = window.location.hash.slice(1);
+      fragment = window.location.hash.slice(1);
       const executable = splitExecutableFragment(fragment);
       executableKind = executable.executableKind;
       fragment = executable.payload;
       if (fragment.startsWith("q:")) {
-        payload = decodeURIComponent(fragment.slice(2));
-        alphabet = outputAlphabetQR;
-      } else {
-        payload = decodeURIComponent(fragment);
-        alphabet = alphabetFromFragment(payload);
+        fragment = fragment.slice(2);
+        alphabetHint = outputAlphabetQR;
       }
     }
 
-    if (!payload) return false;
-    const decoded = decompressText(payload, alphabet);
+    if (!fragment) return false;
+    const { decoded, payload, alphabet } = decodeDocumentPayload(fragment, alphabetHint);
     if (executableKind && decoded.kind !== executableKind) {
       throw new Error(`The ${executablePrefixForKind(executableKind)} link marker requires ${executableKind}`);
     }
