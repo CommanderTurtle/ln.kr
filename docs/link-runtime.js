@@ -52,6 +52,118 @@ export function validateLinkTarget (input, { inferProtocol = true } = {}) {
   return parsed.href;
 }
 
+function escapeHTMLAttribute (value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("<", "&lt;");
+}
+
+const cspRelativeResourceDirectives = new Set([
+  "base-uri",
+  "child-src",
+  "connect-src",
+  "default-src",
+  "font-src",
+  "frame-src",
+  "img-src",
+  "manifest-src",
+  "media-src",
+  "prefetch-src",
+  "script-src",
+  "style-src",
+  "worker-src"
+]);
+
+function allowResolvedOriginsInCSP (policy, origins) {
+  const entitySemicolon = "\uE000";
+  const protectedPolicy = String(policy).replace(
+    /&(?:#39|#x27|apos);/gi,
+    entity => entity.slice(0, -1) + entitySemicolon
+  );
+  const updated = protectedPolicy.split(";").map(segment => {
+    const directive = segment.trimStart().match(/^([a-z-]+)/i)?.[1]?.toLowerCase();
+    if (!cspRelativeResourceDirectives.has(directive)) return segment;
+
+    const missing = origins.filter(origin => !segment.includes(origin));
+    if (!missing.length) return segment;
+
+    const self = /'self'|&(?:#39|#x27|apos)\uE000self&(?:#39|#x27|apos)\uE000/i;
+    if (!self.test(segment)) return segment;
+    return segment.replace(self, match => `${match} ${missing.join(" ")}`);
+  }).join(";");
+  return updated.replaceAll(entitySemicolon, ";");
+}
+
+function allowResolvedOriginsInMetaCSP (source, origins) {
+  return String(source).replace(/<meta\b[^>]*>/gi, tag => {
+    const isCSP = /\bhttp-equiv\s*=\s*(?:"content-security-policy"|'content-security-policy'|content-security-policy\b)/i;
+    if (!isCSP.test(tag)) return tag;
+
+    return tag.replace(
+      /\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)')/i,
+      (attribute, doubleQuoted, singleQuoted) => {
+        const quote = doubleQuoted === undefined ? "'" : '"';
+        const policy = doubleQuoted ?? singleQuoted;
+        return `content=${quote}${allowResolvedOriginsInCSP(policy, origins)}${quote}`;
+      }
+    );
+  });
+}
+
+/**
+ * Give fetched HTML the same URL base it had upstream. The returned source is
+ * still a standalone editable document, while relative stylesheets, scripts,
+ * images, links, and CSS-nested assets resolve as they did at the destination.
+ */
+export function anchorResolvedHTML (source, target) {
+  const documentURL = validateLinkTarget(target, { inferProtocol: false });
+  const text = String(source);
+  const baseTag = text.match(/<base\b[^>]*>/i);
+  let anchored;
+  let baseURL = new URL(documentURL);
+
+  if (baseTag) {
+    const href = baseTag[0].match(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'`=<>]+))/i);
+    if (href) {
+      const resolved = new URL(href[1] ?? href[2] ?? href[3], documentURL).href;
+      baseURL = new URL(resolved);
+      const replacement = baseTag[0].replace(
+        href[0],
+        `href="${escapeHTMLAttribute(resolved)}"`
+      );
+      anchored = text.slice(0, baseTag.index) + replacement +
+        text.slice(baseTag.index + baseTag[0].length);
+    }
+  }
+
+  if (!anchored) {
+    const declaration = `<base href="${escapeHTMLAttribute(documentURL)}">`;
+    const head = /<head\b[^>]*>/i.exec(text);
+    if (head) {
+      const index = head.index + head[0].length;
+      anchored = `${text.slice(0, index)}\n  ${declaration}${text.slice(index)}`;
+    } else {
+      const html = /<html\b[^>]*>/i.exec(text);
+      if (html) {
+        const index = html.index + html[0].length;
+        anchored = `${text.slice(0, index)}\n<head>${declaration}</head>${text.slice(index)}`;
+      } else {
+        const doctype = /^\s*<!doctype\b[^>]*>/i.exec(text);
+        if (doctype) {
+          const index = doctype.index + doctype[0].length;
+          anchored = `${text.slice(0, index)}\n<head>${declaration}</head>${text.slice(index)}`;
+        } else {
+          anchored = `<head>${declaration}</head>\n${text}`;
+        }
+      }
+    }
+  }
+
+  const origins = [...new Set([new URL(documentURL).origin, baseURL.origin])];
+  return allowResolvedOriginsInMetaCSP(anchored, origins);
+}
+
 export function isImageLinkTarget (target) {
   const pathname = new URL(validateLinkTarget(target, { inferProtocol: false })).pathname;
   const match = pathname.match(/\.([a-z0-9]+)$/i);

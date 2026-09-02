@@ -22,18 +22,24 @@ can additionally ask the optional stateless resolver to fetch a public URL.
   byte-for-byte in the test suite.
 
 The frozen v1 grammar combines a ranked code/Markdown dictionary with
-prior-output references. v2 adds a language-independent structural delta: a
-whole earlier byte interval is one reference, and only the sparse changed runs
-are carried. Exponentially spaced exact anchors find candidates at several
-scales, so repeated JSON objects, CSS rules, functions, HTML components, and
-paragraph-shaped blocks all use the same machinery. A reconstructed block can
-itself become the reference for the next generation.
+prior-output references. It is the default and does no structural discovery.
+The visible **Structural v2** switch adds a payload-local document grammar and
+language-independent structural deltas. Repeated words, identifiers, and
+multi-token punctuation/whitespace phrases become short local symbols whose
+definitions are themselves compressed. A whole similar earlier byte interval
+can also become one reference carrying only its sparse changed runs. Recurring
+residual layouts become reusable grammar shapes, so later sectors transmit the
+shape reference and their exact changed bytes rather than repeating layout
+metadata. Exponentially spaced anchors find candidate regions without a
+language parser.
 
-Both encoders are planned for every sufficiently large document. v2 is emitted
-only when its exact bit cost beats v1, its transport cannot be longer, and a
-full decode reproduces the source. Otherwise ln.kr emits the unchanged v1
-stream. The byte count, UTF-8 validation, trailing-data check, and CRC-32 must
-all agree before a document is rendered.
+The choice is explicit: v1 runs only v1, and v2 runs only v2. Inside v2,
+word-only and phrase-aware grammar candidates are measured as complete v2
+streams, so an unhelpful phrase table is never selected merely because it
+reduced a record count. v2 is useful for repeated prose vocabulary, markup,
+objects, rules, functions, components, and other near-duplicate sectors.
+Both formats decode on the same page. The byte count, UTF-8 validation,
+trailing-data check, and CRC-32 must all agree before a document is rendered.
 
 See [FORMAT.md](FORMAT.md) for the wire format and
 [STRUCTURAL-COMPRESSION.md](STRUCTURAL-COMPRESSION.md) for the design attempts,
@@ -43,6 +49,7 @@ cost model, and corpus measurements.
 
 The generated page provides:
 
+- an explicit **Structural v2** encoder switch, with stable v1 as the default;
 - a GFM preview with authored HTML blocks, Mermaid diagrams,
   syntax highlighting, per-block copy actions, and an exact-source view;
 - **Copy raw** and **Copy rich**;
@@ -90,7 +97,8 @@ changing that engine. It produces five deliberately different transports:
   the public target’s bytes, status, range response, and media type. It can be
   used directly as an image, media, or fetch source.
 - **Copy source** uses `#s:`. On opening, the browser reads the target through
-  the resolver, compresses its source locally as HTML, and replaces the short
+  the resolver, anchors relative assets to the final upstream URL, compresses
+  the resulting standalone source locally as v1 HTML, and replaces the short
   route with the ordinary editable `#PAYLOAD` document URL.
 - **Copy live** does the same through `#hs:`, then replaces itself with the
   ordinary `#h:PAYLOAD` expanded HTML live-view URL.
@@ -126,6 +134,7 @@ routes and serves the same `/lr/` resolver handler used by the edge Worker.
 
 ```bash
 node standalone.js encode "const answer = 42;" ascii javascript
+node standalone.js encode "const answer = 42;" ascii javascript v2
 node standalone.js decode "https://a.shel.sh/#..."
 
 # Preserve a file exactly through stdin
@@ -167,7 +176,7 @@ The suite covers:
 - empty, whitespace-sensitive, CRLF/LF, NUL, combining, multilingual, and
   emoji cases;
 - exact and sparsely modified repetition;
-- multigeneration structural deltas and v1 size fallback;
+- multigeneration structural deltas and reusable grammar shapes;
 - deterministic mixed-Unicode fuzz cases;
 - ambiguity-safe emoji boundaries;
 - randomized and multigeneration structural-v2 round trips;

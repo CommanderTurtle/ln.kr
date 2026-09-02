@@ -5,6 +5,7 @@ import {
   outputAlphabetPath
 } from "../docs/alphabets.js";
 import {
+  anchorResolvedHTML,
   decodeDirectLinkTarget,
   decodeLinkTarget,
   encodeDirectLinkTarget,
@@ -56,6 +57,38 @@ describe("link routes", () => {
     expect(() => validateLinkTarget("javascript:alert(1)")).toThrow();
     expect(() => validateLinkTarget("https://user:secret@example.com/")).toThrow();
   });
+
+  test("anchors fetched HTML to its final upstream URL", () => {
+    expect(anchorResolvedHTML(
+      "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./site.css\"></head></html>",
+      "https://example.com/reports/index.html"
+    )).toContain('<head>\n  <base href="https://example.com/reports/index.html">');
+
+    expect(anchorResolvedHTML(
+      "<html><head><base href=\"../assets/\"></head><body></body></html>",
+      "https://example.com/reports/current/index.html"
+    )).toContain('<base href="https://example.com/reports/assets/">');
+  });
+
+  test("lets an upstream meta CSP load resources resolved by the standalone base", () => {
+    const source = `<!doctype html><html><head>
+      <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; form-action 'self'">
+      <link rel="stylesheet" href="./app.css">
+    </head><body></body></html>`;
+    const anchored = anchorResolvedHTML(source, "https://example.test/docs/page.html");
+
+    expect(anchored).toContain("default-src 'self' https://example.test");
+    expect(anchored).toContain("style-src 'self' https://example.test 'unsafe-inline'");
+    expect(anchored).toContain("object-src 'none'");
+    expect(anchored).toContain("form-action 'self'");
+
+    const encoded = anchorResolvedHTML(
+      '<meta http-equiv="Content-Security-Policy" content="default-src &#39;self&#39;; style-src &#39;self&#39;">',
+      "https://assets.example.test/page.html"
+    );
+    expect(encoded).toContain("default-src &#39;self&#39; https://assets.example.test");
+    expect(encoded).toContain("style-src &#39;self&#39; https://assets.example.test");
+  });
 });
 
 test("the deployable page has no analytics beacon", async () => {
@@ -75,7 +108,7 @@ test("the image alias expands to the established editable JavaScript viewer", as
   expect(source).toContain("imageViewerSource(directResolverURL(target))");
 });
 
-test("source routes expand through the normal editable and live HTML formats", async () => {
+test("source routes anchor assets and expand through the normal editable and live HTML formats", async () => {
   const sources = await Promise.all([
     Bun.file(new URL("../docs/index.html", import.meta.url)).text(),
     Bun.file(new URL("../docs/main.js", import.meta.url)).text()
@@ -83,6 +116,7 @@ test("source routes expand through the normal editable and live HTML formats", a
   const source = sources.join("\n");
   expect(source).toContain('id="copy-source-link"');
   expect(source).toContain('id="copy-live-source-link"');
-  expect(source).toContain('compressText(source, outputAlphabetASCII, "html")');
+  expect(source).toContain('anchorResolvedHTML(await response.text(), sourceURL)');
+  expect(source).toContain('compressTextV1(source, outputAlphabetASCII, "html")');
   expect(source).toContain('outputURL(encoded.payload, live ? "html" : "")');
 });
