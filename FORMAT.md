@@ -64,11 +64,16 @@ compact while preserving every differing byte.
 
 - ASCII or emoji: `https://a.shel.sh/#PAYLOAD`
 - Explicit JavaScript auto-run: `https://a.shel.sh/#r:PAYLOAD`
+- Explicit Markdown live view: `https://a.shel.sh/#m:PAYLOAD`
+- Explicit HTML live view: `https://a.shel.sh/#h:PAYLOAD`
 - QR: `HTTPS://A.SHEL.SH/T/PAYLOAD`
 
-The `r:` marker is outside the encoded payload. It is accepted only when the
-decoded display kind is JavaScript, selects parent scope, and evaluates once
-on load. The unprefixed form remains inert until the recipient chooses Run.
+The `r:`, `m:`, and `h:` markers are outside the encoded payload, so they do
+not change compression or the v1 grammar. Each is accepted only when it
+matches the decoded display kind. `r:` selects parent scope and evaluates
+JavaScript once on load. `m:` and `h:` open the document in the expanded
+unique-origin viewer with network requests enabled. The unprefixed form
+remains inert until the recipient chooses Run.
 
 The QR path uses only QR alphanumeric-mode characters. GitHub Pages serves
 `404.html`, which moves that payload into `#q:PAYLOAD`; the normal decoder then
