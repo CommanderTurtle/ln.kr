@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { outputAlphabetASCII } from "../docs/alphabets.js";
 import { encodeLinkTarget } from "../docs/link-runtime.js";
-import { expandSourceIncludes, sourceLinkFromLine } from "../docs/source-includes.js";
+import {
+  applySourceLineSlice,
+  expandSourceIncludes,
+  sourceLinkFromLine,
+  splitSourceLineSlice
+} from "../docs/source-includes.js";
 
 const appURL = "https://a.shel.sh/";
 const sourceLink = (target, prefix = "s:") => {
@@ -34,12 +39,45 @@ function sourceHarness (sources, overrides = {}) {
 }
 
 describe("source includes", () => {
+  test("parses and applies CMD-style zero-based line slices exactly", () => {
+    expect(splitSourceLineSlice("payload")).toEqual({ payload: "payload", lineSlice: null });
+    expect(splitSourceLineSlice("payload::~0:5")).toEqual({
+      payload: "payload",
+      lineSlice: { start: 0, span: 5 }
+    });
+    expect(splitSourceLineSlice("payload::~3")).toEqual({
+      payload: "payload",
+      lineSlice: { start: 3, span: null }
+    });
+    expect(splitSourceLineSlice("payload::~2:-2")).toEqual({
+      payload: "payload",
+      lineSlice: { start: 2, span: -2 }
+    });
+
+    const mixedEndings = "zero\r\none\ntwo\rthree\r\nfour\n";
+    expect(applySourceLineSlice(mixedEndings, { start: 0, span: 2 }))
+      .toBe("zero\r\none\n");
+    expect(applySourceLineSlice(mixedEndings, { start: 2, span: null }))
+      .toBe("two\rthree\r\nfour\n");
+    expect(applySourceLineSlice(mixedEndings, { start: 1, span: -2 }))
+      .toBe("one\ntwo\r");
+    expect(applySourceLineSlice(mixedEndings, { start: -2, span: null }))
+      .toBe("three\r\nfour\n");
+    expect(applySourceLineSlice(mixedEndings, { start: 50, span: null })).toBe("");
+  });
+
   test("recognizes only bare source-route lines from this app", () => {
     const target = "https://raw.example.test/module.js";
     const link = sourceLink(target, "sj:");
     expect(sourceLinkFromLine(`  ${link}\r\n`, appURL)).toMatchObject({
       indent: "  ",
       ending: "\r\n",
+      lineSlice: null,
+      target
+    });
+    expect(sourceLinkFromLine(`${link}::~4:-2\n`, appURL)).toMatchObject({
+      ending: "\n",
+      lineSlice: { start: 4, span: -2 },
       target
     });
     expect(sourceLinkFromLine(`[module](${link})\n`, appURL)).toBeNull();
@@ -102,6 +140,25 @@ describe("source includes", () => {
       .rejects.toThrow("Circular source include");
   });
 
+  test("slices repeated raw modules before nested expansion and fetches each target once", async () => {
+    const target = "https://raw.example.test/large-module.js";
+    const sources = new Map([
+      [target, { body: "zero\r\none\r\ntwo\r\nthree\r\nfour\r\n", type: "text/javascript" }]
+    ]);
+    const harness = sourceHarness(sources);
+    const link = sourceLink(target, "sj:");
+    const authored = [
+      `${link}::~0:2`,
+      `${link}::~2:-1`,
+      `${link}::~4`
+    ].join("\n");
+
+    const expanded = await expandSourceIncludes(authored, harness.options);
+    expect(expanded.text).toBe("zero\r\none\r\ntwo\r\nthree\r\nfour\r\n");
+    expect(expanded.modules).toBe(3);
+    expect(harness.fetches).toBe(1);
+  });
+
   test("keeps direct resolver links literal and rejects binary source modules", async () => {
     const binary = "https://raw.example.test/manual.pdf";
     const direct = sourceLink("https://images.example.test/image.webp", "lr:");
@@ -121,6 +178,8 @@ describe("source includes", () => {
 
 test("the existing preview and runners use expansions while source actions stay exact", async () => {
   const main = await Bun.file(new URL("../docs/main.js", import.meta.url)).text();
+  expect(main).toContain("splitSourceLineSlice(linkage.payload)");
+  expect(main).toContain("applySourceLineSlice(await response.text(), lineSlice)");
   expect(main).toContain("currentRuntimeSource = expanded.text");
   expect(main).toContain("renderContent(elements.preview, expanded.text, decoded.kind)");
   expect(main).toContain("window.eval(currentRuntimeSource)");

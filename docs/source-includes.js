@@ -17,6 +17,35 @@ const defaultLimits = Object.freeze({
   bytes: 32 * 1024 * 1024
 });
 
+const sourceLineSlicePattern = /^(.*)::~(-?\d+)(?::(-?\d+))?$/s;
+
+function safeLineOffset (value) {
+  const offset = Number(value);
+  if (!Number.isSafeInteger(offset)) {
+    throw new Error(`Source line offset is outside the safe integer range: ${value}`);
+  }
+  return offset;
+}
+
+/**
+ * Split the optional CMD-style line suffix from a compressed source payload.
+ * `::~start:length` counts `length` lines forward; a negative length is an
+ * end-relative delimiter. `::~start` continues through the final line.
+ */
+function splitSourceLineSlice (value) {
+  const raw = String(value);
+  const match = raw.match(sourceLineSlicePattern);
+  if (!match) return { payload: raw, lineSlice: null };
+
+  return {
+    payload: match[1],
+    lineSlice: {
+      start: safeLineOffset(match[2]),
+      span: match[3] === undefined ? null : safeLineOffset(match[3])
+    }
+  };
+}
+
 function sourceLinkFromLine (line, appURL) {
   const match = String(line).match(/^(\s*)(\S+?)(\r\n|\n|\r)?$/);
   if (!match) return null;
@@ -35,9 +64,12 @@ function sourceLinkFromLine (line, appURL) {
 
   const linkage = splitLinkFragment(url.hash.slice(1));
   if (!sourceModes.has(linkage.mode)) return null;
+  let lineSlice;
   let target;
   try {
-    ({ target } = decodeLinkTarget(linkage.payload));
+    const sliced = splitSourceLineSlice(linkage.payload);
+    lineSlice = sliced.lineSlice;
+    ({ target } = decodeLinkTarget(sliced.payload));
   } catch {
     return null;
   }
@@ -45,6 +77,7 @@ function sourceLinkFromLine (line, appURL) {
     indent: match[1],
     ending: match[3] || "",
     key: target,
+    lineSlice,
     target
   };
 }
@@ -52,6 +85,27 @@ function sourceLinkFromLine (line, appURL) {
 function linesWithEndings (source) {
   return String(source).match(/[^\r\n]*(?:\r\n|\n|\r|$)/g)
     ?.filter((line, index, lines) => line || index < lines.length - 1) || [];
+}
+
+/** Preserve the selected lines and their original LF/CRLF/CR endings exactly. */
+function applySourceLineSlice (source, lineSlice) {
+  const text = String(source);
+  if (!lineSlice) return text;
+
+  const lines = linesWithEndings(text);
+  const lineCount = lines.length;
+  const start = lineSlice.start < 0
+    ? Math.max(lineCount + lineSlice.start, 0)
+    : Math.min(lineSlice.start, lineCount);
+  let end = lineCount;
+
+  if (lineSlice.span !== null) {
+    end = lineSlice.span < 0
+      ? Math.max(lineCount + lineSlice.span, 0)
+      : Math.min(start + lineSlice.span, lineCount);
+  }
+
+  return lines.slice(start, Math.max(start, end)).join("");
 }
 
 function indentSource (source, indent) {
@@ -133,7 +187,10 @@ export async function expandSourceIncludes (source, {
 
       const nestedAncestors = new Set(ancestors);
       nestedAncestors.add(include.key);
-      const imported = await fetchSource(include.target);
+      const imported = applySourceLineSlice(
+        await fetchSource(include.target),
+        include.lineSlice
+      );
       let replacement = await expand(imported, depth + 1, nestedAncestors);
       replacement = indentSource(replacement, include.indent);
       if (include.ending && !/(?:\r\n|\n|\r)$/.test(replacement)) {
@@ -151,4 +208,4 @@ export async function expandSourceIncludes (source, {
   };
 }
 
-export { sourceLinkFromLine };
+export { applySourceLineSlice, sourceLinkFromLine, splitSourceLineSlice };
