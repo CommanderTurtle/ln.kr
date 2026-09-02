@@ -9,7 +9,8 @@ a versioned text grammar above that engine; it does not replace it with Brotli,
 DEFLATE, Base64URL, a server-side paste ID, or a generic compression package.
 
 Open the site, paste source, and share the resulting fragment URL. The source
-is decoded by the recipient’s browser. Nothing is uploaded.
+is decoded by the recipient’s browser. There is no paste database. Link mode
+can additionally ask the optional stateless resolver to fetch a public URL.
 
 ## What it preserves
 
@@ -79,6 +80,31 @@ the runner adds its network-blocking Content Security Policy and the narrow
 document-link helper described above. Stopping the runner destroys its
 document.
 
+## Link mode
+
+The **Link** control restores ha.mr’s original URL-specialized codec without
+changing that engine. It produces five deliberately different transports:
+
+- **Copy link** uses `#l:` and shows the destination before navigation.
+- **Copy direct** uses `/lr/PAYLOAD` on `lr.a.shel.sh`; that endpoint streams
+  the public target’s bytes, status, range response, and media type. It can be
+  used directly as an image, media, or fetch source.
+- **Copy source** uses `#s:`. On opening, the browser reads the target through
+  the resolver, compresses its source locally as HTML, and replaces the short
+  route with the ordinary editable `#PAYLOAD` document URL.
+- **Copy live** does the same through `#hs:`, then replaces itself with the
+  ordinary `#h:PAYLOAD` expanded HTML live-view URL.
+- **Copy image** appears only for a recognized image suffix. `#i:` expands the
+  target into the project’s complete editable JavaScript image viewer, shows
+  that exact source in the normal viewer, and runs it in parent scope.
+
+`#lr:` remains the inspectable framed wrapper for a compressed destination.
+The byte endpoint uses a separate path-safe alphabet over the same ha.mr
+positive-BigInt stream. The isolated `lr.a.shel.sh` origin is intentional:
+arbitrary resolved content never shares the `a.shel.sh` application origin.
+The resolver stores nothing, sends no target credentials or cookies, follows
+only revalidated public HTTP(S) redirects, and rejects private/local targets.
+
 ## Run locally
 
 No install or build is required for the site. Bun is only used for the local
@@ -91,8 +117,8 @@ bun run serve
 bun test
 ```
 
-The development server reproduces GitHub Pages’ `404.html` behavior so QR
-routes can be tested locally.
+The development server reproduces GitHub Pages’ `404.html` behavior for QR
+routes and serves the same `/lr/` resolver handler used by the edge Worker.
 
 ## CLI
 
@@ -117,6 +143,18 @@ custom domain in `docs/CNAME`:
 a.shel.sh
 ```
 
+GitHub Pages cannot execute the `/lr/` byte resolver. `wrangler.jsonc` deploys
+the stateless module Worker to the isolated `lr.a.shel.sh` custom domain:
+
+```bash
+bun x wrangler dev
+bun x wrangler deploy
+```
+
+No Worker deployment is needed for ordinary self-contained document links.
+It is needed for **Copy direct**, **Copy source**, **Copy live**, `#lr:`, and
+the source used by `#i:` image aliases.
+
 The Docker image serves the same directory with Nginx and sends unknown QR
 paths through `404.html`.
 
@@ -135,6 +173,7 @@ The suite covers:
 - randomized and multigeneration structural-v2 round trips;
 - payload corruption rejection;
 - viewer URL-mode contracts;
+- exact resolver byte/MIME/range passthrough and private-target rejection;
 - vendored renderer assets and license copies;
 - vendored JSFuck alphabet and execution.
 

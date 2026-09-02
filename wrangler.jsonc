@@ -1,0 +1,16 @@
+{
+  "name": "ln-kr-resolver",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-09-02",
+  "workers_dev": false,
+  "send_metrics": false,
+  "dependencies_instrumentation": {
+    "enabled": false
+  },
+  "routes": [
+    {
+      "pattern": "lr.a.shel.sh",
+      "custom_domain": true
+    }
+  ]
+}
