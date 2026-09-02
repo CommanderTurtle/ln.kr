@@ -79,15 +79,108 @@ for (const key in pathEncode) {
  */
 export function numberToString (number, alphabet) {
   const alphabetSize = BigInt(alphabet.length);
+  const parser = getAlphabetParser(alphabet);
   let string = "";
 
   while (number > 0) {
     number --;
-    string += alphabet[number % alphabetSize];
+    const digit = Number(number % alphabetSize);
+    const symbol = alphabet[digit];
+
+    // Some emoji are themselves concatenations of other emoji in the same
+    // alphabet.  A boundary can therefore turn two valid digits into a third,
+    // longer digit.  Frame only those ambiguous boundaries; fixed-width and
+    // already-unambiguous payloads remain byte-for-byte compatible.
+    if (string && parser.matchLast(string + symbol) !== digit) {
+      if (!parser.separator) {
+        throw new Error("Alphabet has an ambiguous boundary and no safe separator");
+      }
+      string += parser.separator;
+    }
+    string += symbol;
     number /= alphabetSize;
   }
 
   return string;
+}
+
+const alphabetParsers = new WeakMap();
+const separatorCandidates = [".", "|", "^", "`"];
+
+function getAlphabetParser (alphabet) {
+  let parser = alphabetParsers.get(alphabet);
+  if (parser) return parser;
+
+  const root = { children: new Map(), index: -1 };
+  alphabet.forEach((symbol, index) => {
+    let node = root;
+    for (const character of Array.from(symbol).reverse()) {
+      if (!node.children.has(character)) {
+        node.children.set(character, { children: new Map(), index: -1 });
+      }
+      node = node.children.get(character);
+    }
+    if (node.index < 0) node.index = index;
+  });
+
+  const matchLast = string => {
+    let node = root;
+    let index = -1;
+    let end = string.length;
+
+    while (end > 0) {
+      let start = end - 1;
+      const low = string.charCodeAt(start);
+      if (low >= 0xdc00 && low <= 0xdfff && start > 0) {
+        const high = string.charCodeAt(start - 1);
+        if (high >= 0xd800 && high <= 0xdbff) start --;
+      }
+      node = node.children.get(string.slice(start, end));
+      if (!node) break;
+      if (node.index >= 0 && (index < 0 || node.index < index)) index = node.index;
+      end = start;
+    }
+
+    return index;
+  };
+
+  const variableLength = alphabet.some(symbol => Array.from(symbol).length > 1);
+  const separator = variableLength
+    ? separatorCandidates.find(candidate => alphabet.every(symbol => !symbol.includes(candidate))) || ""
+    : "";
+  parser = { matchLast, separator };
+  alphabetParsers.set(alphabet, parser);
+  return parser;
+}
+
+function readAlphabetDigits (string, alphabet, onDigit) {
+  const parser = getAlphabetParser(alphabet);
+  let count = 0;
+
+  while (string) {
+    if (parser.separator && string.endsWith(parser.separator)) {
+      throw new Error("Invalid alphabet boundary separator");
+    }
+    const digit = parser.matchLast(string);
+    if (digit < 0) throw new Error(`Invalid character: "${string.at(-1)}"`);
+    onDigit(digit);
+    count ++;
+    string = string.slice(0, -alphabet[digit].length);
+
+    if (parser.separator && string.endsWith(parser.separator)) {
+      string = string.slice(0, -parser.separator.length);
+      if (!string || string.endsWith(parser.separator)) {
+        throw new Error("Invalid alphabet boundary separator");
+      }
+    }
+  }
+
+  return count;
+}
+
+/** Count encoded alphabet digits, excluding ambiguity boundary framing. */
+export function countAlphabetSymbols (string, alphabet) {
+  return readAlphabetDigits(string, alphabet, () => {});
 }
 
 /**
@@ -105,15 +198,12 @@ export function stringToNumber (string, alphabet) {
   // combinations. To account for this, we assume the alphabets are
   // ordered with the longest sequences first (they are), and find the
   // first entry that matches the current position in the string.
-  while (string) {
-    const digit = BigInt(alphabet.findIndex(c => string.endsWith(c)));
-    if (digit < 0n) throw `Invalid character: "${string.at(-1)}"`;
+  readAlphabetDigits(string, alphabet, value => {
+    const digit = BigInt(value);
     number *= alphabetSize;
     number += digit;
     number ++;
-    const sequence = alphabet[digit];
-    string = string.slice(0, -sequence.length);
-  }
+  });
 
   return number;
 }

@@ -20,14 +20,23 @@ is decoded by the recipient’s browser. Nothing is uploaded.
 - Original ha.mr URL-codec behavior. Frozen upstream vectors guard its outputs
   byte-for-byte in the test suite.
 
-The v1 grammar combines a ranked code/Markdown dictionary with prior-output
-references. An exact paragraph repeated *N* times becomes a copy record. A
-mostly repeated block with changed lines becomes copy → exact literal → copy,
-so the unchanged regions are reused without normalizing the changed region.
-The byte count, UTF-8 validation, trailing-data check, and CRC-32 must all agree
-before a document is rendered.
+The frozen v1 grammar combines a ranked code/Markdown dictionary with
+prior-output references. v2 adds a language-independent structural delta: a
+whole earlier byte interval is one reference, and only the sparse changed runs
+are carried. Exponentially spaced exact anchors find candidates at several
+scales, so repeated JSON objects, CSS rules, functions, HTML components, and
+paragraph-shaped blocks all use the same machinery. A reconstructed block can
+itself become the reference for the next generation.
 
-See [FORMAT.md](FORMAT.md) for the wire format.
+Both encoders are planned for every sufficiently large document. v2 is emitted
+only when its exact bit cost beats v1, its transport cannot be longer, and a
+full decode reproduces the source. Otherwise ln.kr emits the unchanged v1
+stream. The byte count, UTF-8 validation, trailing-data check, and CRC-32 must
+all agree before a document is rendered.
+
+See [FORMAT.md](FORMAT.md) for the wire format and
+[STRUCTURAL-COMPRESSION.md](STRUCTURAL-COMPRESSION.md) for the design attempts,
+cost model, and corpus measurements.
 
 ## Viewer
 
@@ -120,7 +129,10 @@ The suite covers:
 - empty, whitespace-sensitive, CRLF/LF, NUL, combining, multilingual, and
   emoji cases;
 - exact and sparsely modified repetition;
+- multigeneration structural deltas and v1 size fallback;
 - deterministic mixed-Unicode fuzz cases;
+- ambiguity-safe emoji boundaries;
+- randomized and multigeneration structural-v2 round trips;
 - payload corruption rejection;
 - viewer URL-mode contracts;
 - vendored renderer assets and license copies;

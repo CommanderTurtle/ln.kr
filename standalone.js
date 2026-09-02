@@ -4,7 +4,8 @@ import {
   outputAlphabetEmoji,
   outputAlphabetQR
 } from "./docs/alphabets.js";
-import { compressText, decompressText } from "./docs/text-compress.js";
+import { decodeDocumentPayload } from "./docs/payload.js";
+import { compressText } from "./docs/text-compress.js";
 import { splitExecutableFragment } from "./docs/viewer-runtime.js";
 
 const [, , command, inputArgument, alphabetArgument = "ascii", kind = "auto"] = process.argv;
@@ -41,23 +42,22 @@ if (command === "encode") {
 if (command === "decode") {
   let payload = inputArgument;
   let alphabetName = alphabetArgument;
+  let alphabetHint = process.argv[4] ? alphabets[alphabetArgument] : null;
   const qrMarker = payload.toUpperCase().indexOf("/T/");
   if (qrMarker >= 0) {
     payload = payload.slice(qrMarker + 3);
     alphabetName = "qr";
+    alphabetHint = outputAlphabetQR;
   } else if (payload.includes("#q:")) {
-    payload = decodeURIComponent(payload.slice(payload.indexOf("#q:") + 3));
+    payload = payload.slice(payload.indexOf("#q:") + 3);
     alphabetName = "qr";
+    alphabetHint = outputAlphabetQR;
   } else if (payload.includes("#")) {
-    payload = decodeURIComponent(payload.slice(payload.indexOf("#") + 1));
+    payload = payload.slice(payload.indexOf("#") + 1);
     payload = splitExecutableFragment(payload).payload;
-    if (Array.from(payload).some(character => !outputAlphabetASCII.includes(character))) {
-      alphabetName = "emoji";
-    }
   }
-  const alphabet = alphabets[alphabetName];
-  if (!alphabet) usage(2);
-  process.stdout.write(decompressText(payload, alphabet).text);
+  if (alphabetHint === undefined || !alphabets[alphabetName]) usage(2);
+  process.stdout.write(decodeDocumentPayload(payload, alphabetHint).decoded.text);
   process.exit(0);
 }
 
