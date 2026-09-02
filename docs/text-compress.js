@@ -22,6 +22,13 @@ const MIN_LEXEME_OCCURRENCES = 3;
 const MAX_LEXICON_ENTRIES = 512;
 const MAX_GRAMMAR_UNITS = 16;
 const GRAMMAR_SEEN_SIZE = 1 << 19;
+const MIN_TEMPLATE_OCCURRENCES = 3;
+const MIN_TEMPLATE_BYTES = 12;
+const MAX_TEMPLATE_BYTES = 8192;
+const MAX_TEMPLATE_TOKENS = 512;
+const MAX_TEMPLATE_ENTRIES = 256;
+const MAX_TEMPLATE_GROUP_OCCURRENCES = 2048;
+const TEMPLATE_SCAN_MULTIPLIER = 4;
 
 const KIND_TO_NUMBER = Object.freeze({
   text: 0,
@@ -436,7 +443,8 @@ function tokenize (
   bytes,
   structured = false,
   legacyCosts = null,
-  activeDictionaryTrie = dictionaryTrie
+  activeDictionaryTrie = dictionaryTrie,
+  templateCandidates = null
 ) {
   const tokens = [];
   const chains = new Map();
@@ -449,6 +457,7 @@ function tokenize (
     const lexemePath = activeDictionaryTrie === dictionaryTrie
       ? null
       : findLexemePath(bytes, position, activeDictionaryTrie);
+    const template = templateCandidates?.get(position)?.[0] || null;
     let patch = null;
     if (
       structured &&
@@ -459,10 +468,18 @@ function tokenize (
       patch = findPatchMatch(bytes, position, chains, legacyCosts);
     }
     const start = position;
+    const structural = template && (!patch || template.legacySavings >= patch.legacySavings)
+      ? template
+      : patch && { type: "patch", ...patch };
+    const ordinarySavings = Math.max(
+      lexemePath?.savings || 0,
+      copy?.savings || 0,
+      dictionary?.savings || 0
+    );
 
-    if (patch && (!lexemePath || patch.savings >= lexemePath.savings)) {
-      tokens.push({ type: "patch", ...patch });
-      position += patch.length;
+    if (structural && structural.savings >= ordinarySavings) {
+      tokens.push(structural);
+      position += structural.length;
     } else if (
       lexemePath &&
       (!copy || lexemePath.savings > copy.savings) &&
@@ -524,6 +541,600 @@ function buildLegacyCostPrefix (byteLength, tokens) {
   return costs;
 }
 
+function codeUnitByteOffsets (text) {
+  const offsets = new Uint32Array(text.length + 1);
+  let byteOffset = 0;
+
+  for (let index = 0; index < text.length;) {
+    offsets[index] = byteOffset;
+    const point = text.codePointAt(index);
+    const width = point > 0xffff ? 2 : 1;
+    if (width === 2) offsets[index + 1] = byteOffset;
+    byteOffset += point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
+    index += width;
+    offsets[index] = byteOffset;
+  }
+  return offsets;
+}
+
+function lineRanges (text) {
+  const ranges = [];
+  const breaks = /\r\n|\n|\r/g;
+  let start = 0;
+  let match;
+
+  while ((match = breaks.exec(text))) {
+    ranges.push({ start, contentEnd: match.index, end: match.index + match[0].length });
+    start = match.index + match[0].length;
+  }
+  if (start < text.length) ranges.push({ start, contentEnd: text.length, end: text.length });
+  return ranges;
+}
+
+function inferredStructuralKind (text, kind) {
+  if (kind === "html") return "html";
+  if (kind === "markdown") return "markdown";
+  if (kind === "javascript") return "javascript";
+
+  const trimmed = text.trimStart();
+  if (
+    /^(?:\{|\[)/.test(trimmed) &&
+    ((text.match(/^\s*"(?:[^"\\]|\\.)+"\s*:/gm) || []).length >= 2)
+  ) return "json";
+
+  const cssProperties = (text.match(/^\s*(?:--[\w-]+|[a-z-]{2,})\s*:\s*[^\n;{}]+;/gim) || []).length;
+  const cssRules = (text.match(/(?:^|\n)\s*[.#@:\w\[\]="'()>+~*-][^\n{}]{0,255}\{/g) || []).length;
+  if (cssProperties >= 3 && cssRules >= 1) return "css";
+  return "text";
+}
+
+function classifyFenceLanguage (info) {
+  const language = String(info).trim().toLowerCase().split(/\s+/)[0];
+  if (["js", "jsx", "mjs", "cjs", "ts", "tsx", "javascript", "typescript"].includes(language)) {
+    return "javascript";
+  }
+  if (["css", "scss", "sass", "less"].includes(language)) return "css";
+  if (["html", "htm", "xml", "svg", "vue", "svelte"].includes(language)) return "html";
+  if (["json", "jsonc", "json5"].includes(language)) return "json";
+  if (["md", "markdown", "mdx"].includes(language)) return "markdown";
+  return language ? `code:${language}` : "code";
+}
+
+function collectExplicitStructuralZones (text, kind) {
+  const ranges = [];
+  const addElementBodies = (name, zoneKind) => {
+    const expression = new RegExp(`<${name}\\b[^>]*>[\\s\\S]*?<\\/${name}\\s*>`, "gi");
+    for (const match of text.matchAll(expression)) {
+      const opening = match[0].match(new RegExp(`^<${name}\\b[^>]*>`, "i"));
+      const close = match[0].toLowerCase().lastIndexOf(`</${name}`);
+      if (!opening || close < opening[0].length) continue;
+      let detectedKind = zoneKind;
+      if (name === "script" && /\btype\s*=\s*["']?(?:application\/)?(?:ld\+)?json/i.test(opening[0])) {
+        detectedKind = "json";
+      }
+      ranges.push({
+        start: match.index + opening[0].length,
+        end: match.index + close,
+        kind: detectedKind,
+        priority: 2
+      });
+    }
+  };
+
+  addElementBodies("style", "css");
+  addElementBodies("script", "javascript");
+
+  if (kind === "markdown" || /(^|\n)```/.test(text)) {
+    const fences = /^```([^\r\n]*)\r?\n([\s\S]*?)^```[^\r\n]*(?:\r?\n|$)/gm;
+    for (const match of text.matchAll(fences)) {
+      const openingEnd = match[0].indexOf("\n") + 1;
+      const contentOffset = match[0].indexOf(match[2], openingEnd);
+      ranges.push({
+        start: match.index + contentOffset,
+        end: match.index + contentOffset + match[2].length,
+        kind: classifyFenceLanguage(match[1]),
+        priority: 1
+      });
+    }
+
+    const authoredBlocks = /<(details|summary|div|section|article|table|picture|figure|video|audio)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
+    for (const match of text.matchAll(authoredBlocks)) {
+      ranges.push({
+        start: match.index,
+        end: match.index + match[0].length,
+        kind: "html",
+        priority: 1
+      });
+    }
+    const authoredVoidElements = /<(?:img|source|track|br|hr)\b[^>]*>/gi;
+    for (const match of text.matchAll(authoredVoidElements)) {
+      ranges.push({
+        start: match.index,
+        end: match.index + match[0].length,
+        kind: "html",
+        priority: 1
+      });
+    }
+  }
+  return ranges;
+}
+
+function classifyStructuralLine (value) {
+  const trimmed = value.trim();
+  if (/^\s*<\/?[a-z][^>]*>/i.test(value)) return "html";
+  if (/^\s*(?:--[\w-]+|[a-z-]{2,})\s*:\s*[^;{}]+;\s*$/i.test(value)) return "css";
+  if (
+    trimmed.length <= 512 && trimmed.endsWith("{") &&
+    /^[.#@:\w\[\]="'()>+~*-]/.test(trimmed)
+  ) return "css";
+  if (/^\s*"(?:[^"\\]|\\.)+"\s*:/.test(value)) return "json";
+  if (/^\s*(?:import|export|const|let|var|function|class|interface|type|if|for|while|return)\b/.test(value)) {
+    return "javascript";
+  }
+  if (/(?:=>|\b(?:document|window)\.|\.addEventListener\s*\()/.test(value)) return "javascript";
+  return "text";
+}
+
+function scanStructuralZones (text, kind) {
+  const offsets = codeUnitByteOffsets(text);
+  const baseKind = inferredStructuralKind(text, kind);
+  const explicit = collectExplicitStructuralZones(text, kind)
+    .filter(range => range.start < range.end)
+    .sort((left, right) => left.start - right.start || right.priority - left.priority || right.end - left.end);
+  const characterZones = [];
+  const push = (start, end, zoneKind) => {
+    if (start >= end) return;
+    const previous = characterZones.at(-1);
+    if (previous && previous.end === start && previous.kind === zoneKind) {
+      previous.end = end;
+    } else {
+      characterZones.push({ start, end, kind: zoneKind });
+    }
+  };
+
+  const boundaries = [...new Set([
+    0,
+    text.length,
+    ...explicit.flatMap(range => [range.start, range.end])
+  ])].sort((left, right) => left - right);
+  for (let index = 0; index + 1 < boundaries.length; index ++) {
+    const start = boundaries[index];
+    const end = boundaries[index + 1];
+    const active = explicit
+      .filter(range => range.start <= start && range.end >= end)
+      .sort((left, right) => right.priority - left.priority ||
+        (left.end - left.start) - (right.end - right.start))[0];
+    push(start, end, active?.kind || baseKind);
+  }
+
+  // Generic text can still contain a pasted CSS/JS/JSON sector. Promote only
+  // sustained runs so one incidental colon or brace cannot relabel prose.
+  let refined = characterZones;
+  if (baseKind === "text") {
+    refined = [];
+    for (const zone of characterZones) {
+      if (zone.kind !== "text") {
+        refined.push(zone);
+        continue;
+      }
+      const lines = lineRanges(text.slice(zone.start, zone.end));
+      let runStart = 0;
+      while (runStart < lines.length) {
+        const first = lines[runStart];
+        const firstValue = text.slice(zone.start + first.start, zone.start + first.contentEnd);
+        const label = classifyStructuralLine(firstValue);
+        let runEnd = runStart + 1;
+        let meaningful = firstValue.trim() ? 1 : 0;
+        while (runEnd < lines.length) {
+          const current = lines[runEnd];
+          const value = text.slice(zone.start + current.start, zone.start + current.contentEnd);
+          const currentLabel = value.trim() ? classifyStructuralLine(value) : label;
+          if (currentLabel !== label) break;
+          if (value.trim()) meaningful ++;
+          runEnd ++;
+        }
+        const start = zone.start + first.start;
+        const end = zone.start + lines[runEnd - 1].end;
+        const promoted = label !== "text" && meaningful >= 2 && end - start >= 96;
+        const previous = refined.at(-1);
+        const zoneKind = promoted ? label : "text";
+        if (previous && previous.end === start && previous.kind === zoneKind) previous.end = end;
+        else refined.push({ start, end, kind: zoneKind });
+        runStart = runEnd;
+      }
+    }
+  }
+
+  return refined.map(zone => ({
+    ...zone,
+    byteStart: offsets[zone.start],
+    byteEnd: offsets[zone.end]
+  }));
+}
+
+function structuralZoneAt (zones, codeIndex) {
+  let low = 0;
+  let high = zones.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    const zone = zones[middle];
+    if (codeIndex < zone.start) high = middle - 1;
+    else if (codeIndex >= zone.end) low = middle + 1;
+    else return zone;
+  }
+  return zones.at(-1) || { start: 0, end: 0, byteStart: 0, byteEnd: 0, kind: "text" };
+}
+
+function scanBraceSectors (text, zone) {
+  if (!["css", "javascript", "json"].includes(zone.kind) && !zone.kind.startsWith("code:")) return [];
+  const sectors = [];
+  const stack = [];
+  let quote = "";
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+
+  for (let index = zone.start; index < zone.end; index ++) {
+    const character = text[index];
+    const next = text[index + 1];
+    if (lineComment) {
+      if (character === "\n" || character === "\r") lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (character === "*" && next === "/") {
+        blockComment = false;
+        index ++;
+      }
+      continue;
+    }
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = "";
+      continue;
+    }
+    if (character === "/" && next === "/") {
+      lineComment = true;
+      index ++;
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      blockComment = true;
+      index ++;
+      continue;
+    }
+    if (character === '"' || character === "'" || character === "`") {
+      quote = character;
+      continue;
+    }
+    if (character === "{") {
+      stack.push(index);
+      continue;
+    }
+    if (character !== "}" || !stack.length) continue;
+
+    const opening = stack.pop();
+    const lineStart = Math.max(zone.start, text.lastIndexOf("\n", opening - 1) + 1);
+    const newline = text.indexOf("\n", index + 1);
+    const end = newline >= 0 && newline < zone.end ? newline + 1 : index + 1;
+    const start = lineStart < opening && text.slice(lineStart, opening).trim() ? lineStart : opening;
+    if (end - start >= 32 && end - start <= MAX_TEMPLATE_BYTES) {
+      sectors.push({ start, end, zoneKind: zone.kind, type: "sector" });
+    }
+  }
+  return sectors;
+}
+
+function scanHTMLSectors (text, zone) {
+  if (zone.kind !== "html") return [];
+  const sectors = [];
+  const stack = [];
+  const voidElements = new Set([
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+    "param", "source", "track", "wbr"
+  ]);
+  const tags = /<\/?([a-z][\w:-]*)\b[^>]*>/gi;
+  tags.lastIndex = zone.start;
+  let match;
+  while ((match = tags.exec(text)) && match.index < zone.end) {
+    if (tags.lastIndex > zone.end) break;
+    const name = match[1].toLowerCase();
+    const closing = match[0].startsWith("</");
+    const selfClosing = /\/\s*>$/.test(match[0]) || voidElements.has(name);
+    if (!closing && !selfClosing) {
+      stack.push({ name, start: match.index });
+      continue;
+    }
+    if (!closing) continue;
+    let openingIndex = stack.length - 1;
+    while (openingIndex >= 0 && stack[openingIndex].name !== name) openingIndex --;
+    if (openingIndex < 0) continue;
+    const opening = stack[openingIndex];
+    stack.length = openingIndex;
+    const end = tags.lastIndex;
+    if (end - opening.start >= 32 && end - opening.start <= MAX_TEMPLATE_BYTES) {
+      sectors.push({ start: opening.start, end, zoneKind: "html", type: "sector" });
+    }
+  }
+  return sectors;
+}
+
+function collectStructuralRanges (text, zones, offsets) {
+  const ranges = [];
+  for (const line of lineRanges(text)) {
+    const value = text.slice(line.start, line.contentEnd);
+    if (!value.trim() || line.end - line.start < MIN_TEMPLATE_BYTES || line.end - line.start > 2048) continue;
+    const zone = structuralZoneAt(zones, line.start);
+    ranges.push({
+      start: line.start,
+      end: line.end,
+      zoneKind: zone.kind,
+      type: "line"
+    });
+  }
+
+  for (const zone of zones) {
+    ranges.push(...scanBraceSectors(text, zone), ...scanHTMLSectors(text, zone));
+  }
+
+  // Markdown lists, tables, block quotes, and ordinary multi-line paragraphs
+  // become sector candidates even when they contain no programming braces.
+  const lines = lineRanges(text);
+  let paragraphStart = -1;
+  let paragraphZone = null;
+  const flushParagraph = end => {
+    if (paragraphStart < 0 || !paragraphZone) return;
+    if (end - paragraphStart >= 48 && end - paragraphStart <= MAX_TEMPLATE_BYTES) {
+      ranges.push({
+        start: paragraphStart,
+        end,
+        zoneKind: paragraphZone.kind,
+        type: "sector"
+      });
+    }
+    paragraphStart = -1;
+    paragraphZone = null;
+  };
+  for (const line of lines) {
+    const value = text.slice(line.start, line.contentEnd);
+    const zone = structuralZoneAt(zones, line.start);
+    if (!value.trim() || zone.kind !== "markdown") {
+      flushParagraph(line.start);
+      continue;
+    }
+    if (paragraphStart < 0) {
+      paragraphStart = line.start;
+      paragraphZone = zone;
+    }
+  }
+  flushParagraph(text.length);
+
+  const unique = new Map();
+  for (const range of ranges) {
+    const byteStart = offsets[range.start];
+    const byteEnd = offsets[range.end];
+    const byteLength = byteEnd - byteStart;
+    if (byteLength < MIN_TEMPLATE_BYTES || byteLength > MAX_TEMPLATE_BYTES) continue;
+    unique.set(`${range.type}:${byteStart}:${byteEnd}`, { ...range, byteStart, byteEnd });
+  }
+  return [...unique.values()].sort((left, right) =>
+    (left.type === right.type ? 0 : left.type === "sector" ? -1 : 1) ||
+    left.byteStart - right.byteStart || right.byteEnd - left.byteEnd);
+}
+
+function hashTemplateShape (hash, value) {
+  for (let index = 0; index < value.length; index ++) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function templatePatternUnits (value) {
+  const expression = /("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|`(?:\\[\s\S]|[^`\\])*`)|([\p{L}_$-]+)|(\p{N}+(?:\.\p{N}+)*)|(\s+)|([^\p{L}\p{N}_$\s-]+)/gu;
+  const units = [];
+  let hash = 2166136261;
+  for (const match of value.matchAll(expression)) {
+    let shape;
+    if (match[1] !== undefined) shape = `q${match[0][0]}`;
+    else if (match[2] !== undefined) shape = "w";
+    else if (match[3] !== undefined) shape = "n";
+    else if (match[4] !== undefined) shape = `s${match[0]}`;
+    else shape = `p${match[0]}`;
+    hash = hashTemplateShape(hash, shape);
+    units.push({ value: match[0], bytes: encoder.encode(match[0]), shape });
+    if (units.length > MAX_TEMPLATE_TOKENS) return null;
+  }
+  return { units, hash };
+}
+
+function commonByteEdges (values) {
+  const minimum = Math.min(...values.map(value => value.length));
+  let prefix = 0;
+  while (prefix < minimum && values.every(value => value[prefix] === values[0][prefix])) prefix ++;
+  let suffix = 0;
+  while (
+    suffix < minimum - prefix &&
+    values.every(value => value[value.length - suffix - 1] === values[0][values[0].length - suffix - 1])
+  ) suffix ++;
+  return { prefix, suffix };
+}
+
+function templateReferenceBitLength (index, holes) {
+  return 7 + gammaBitLength(index + 1) + holes.reduce(
+    (total, hole) => total + gammaBitLength(hole.length + 1) + hole.length * 8,
+    0
+  );
+}
+
+function templateDefinitionBitLength (template) {
+  const staticLength = template.staticSegments.reduce((total, segment) => total + segment.length, 0);
+  const definitions = new Uint8Array(staticLength);
+  let offset = 0;
+  let bits = gammaBitLength(template.holeCount);
+  for (const segment of template.staticSegments) {
+    bits += gammaBitLength(segment.length + 1);
+    definitions.set(segment, offset);
+    offset += segment.length;
+  }
+  return bits + tokenize(definitions).reduce(
+    (total, token) => total + tokenBits(token, LEGACY_VERSION).length,
+    0
+  );
+}
+
+function deriveStructuralTemplate (group, legacyCosts) {
+  const unitCount = group[0].units.length;
+  if (!unitCount || group.some(occurrence => occurrence.units.length !== unitCount)) return null;
+
+  const staticSegments = [];
+  const holesByOccurrence = group.map(() => []);
+  let currentStatic = [];
+  let lastWasHole = false;
+  const appendStatic = bytes => {
+    if (bytes.length) currentStatic.push(...bytes);
+  };
+  const appendHole = values => {
+    if (lastWasHole && currentStatic.length === 0) {
+      values.forEach((value, index) => {
+        const previous = holesByOccurrence[index].at(-1);
+        const combined = new Uint8Array(previous.length + value.length);
+        combined.set(previous);
+        combined.set(value, previous.length);
+        holesByOccurrence[index][holesByOccurrence[index].length - 1] = combined;
+      });
+      return;
+    }
+    staticSegments.push(Uint8Array.from(currentStatic));
+    currentStatic = [];
+    values.forEach((value, index) => holesByOccurrence[index].push(value));
+    lastWasHole = true;
+  };
+
+  for (let unit = 0; unit < unitCount; unit ++) {
+    const values = group.map(occurrence => occurrence.units[unit].bytes);
+    const first = values[0];
+    const identical = values.every(value =>
+      value.length === first.length && value.every((byte, index) => byte === first[index]));
+    if (identical) {
+      appendStatic(first);
+      continue;
+    }
+    const { prefix, suffix } = commonByteEdges(values);
+    appendStatic(first.slice(0, prefix));
+    appendHole(values.map(value => value.slice(prefix, value.length - suffix)));
+    appendStatic(first.slice(first.length - suffix));
+  }
+  staticSegments.push(Uint8Array.from(currentStatic));
+  const holeCount = holesByOccurrence[0].length;
+  if (!holeCount || staticSegments.length !== holeCount + 1) return null;
+
+  const staticBytes = staticSegments.reduce((total, segment) => total + segment.length, 0);
+  if (staticBytes < 8) return null;
+  const occurrences = group.map((occurrence, index) => ({
+    start: occurrence.byteStart,
+    length: occurrence.byteEnd - occurrence.byteStart,
+    holes: holesByOccurrence[index]
+  }));
+  for (const occurrence of occurrences) {
+    const rebuiltLength = staticBytes + occurrence.holes.reduce((total, hole) => total + hole.length, 0);
+    if (rebuiltLength !== occurrence.length) return null;
+  }
+
+  const template = {
+    type: group[0].type,
+    zoneKind: group[0].zoneKind,
+    staticSegments,
+    staticBytes,
+    holeCount,
+    occurrences
+  };
+  template.definitionBits = templateDefinitionBitLength(template);
+  template.estimatedGain = occurrences.reduce((total, occurrence) =>
+    total + legacyCosts[occurrence.start + occurrence.length] - legacyCosts[occurrence.start] -
+      templateReferenceBitLength(0, occurrence.holes), 0) - template.definitionBits;
+  return template.estimatedGain > 2 ? template : null;
+}
+
+function collectStructuralTemplates (text, bytes, zones, legacyCosts) {
+  const offsets = codeUnitByteOffsets(text);
+  const ranges = collectStructuralRanges(text, zones, offsets);
+  const groups = new Map();
+  const scanBudget = Math.max(bytes.length, 4096) * TEMPLATE_SCAN_MULTIPLIER;
+  let scanned = 0;
+
+  for (const range of ranges) {
+    const length = range.byteEnd - range.byteStart;
+    if (scanned + length > scanBudget) continue;
+    const patterned = templatePatternUnits(text.slice(range.start, range.end));
+    if (!patterned || patterned.units.length < 2) continue;
+    scanned += length;
+    const key = `${range.type}:${range.zoneKind}:${patterned.units.length}:${patterned.hash}`;
+    const group = groups.get(key) || [];
+    if (group.length < MAX_TEMPLATE_GROUP_OCCURRENCES) {
+      group.push({ ...range, units: patterned.units });
+      groups.set(key, group);
+    }
+  }
+
+  const ranked = [];
+  for (const group of groups.values()) {
+    if (group.length < MIN_TEMPLATE_OCCURRENCES) continue;
+    const template = deriveStructuralTemplate(group, legacyCosts);
+    if (template) ranked.push(template);
+  }
+  ranked.sort((left, right) =>
+    right.estimatedGain - left.estimatedGain ||
+    right.occurrences.length - left.occurrences.length ||
+    right.staticBytes - left.staticBytes);
+
+  const templates = [];
+  let definitionBytes = 0;
+  for (const template of ranked) {
+    if (templates.length >= MAX_TEMPLATE_ENTRIES) break;
+    if (definitionBytes + template.staticBytes > bytes.length) continue;
+    const index = templates.length;
+    const gain = template.occurrences.reduce((total, occurrence) =>
+      total + legacyCosts[occurrence.start + occurrence.length] - legacyCosts[occurrence.start] -
+        templateReferenceBitLength(index, occurrence.holes), 0) - template.definitionBits;
+    if (gain <= 2) continue;
+    template.estimatedGain = gain;
+    templates.push(template);
+    definitionBytes += template.staticBytes;
+  }
+  return templates;
+}
+
+function buildTemplateCandidateMap (templates, legacyCosts) {
+  const candidates = new Map();
+  templates.forEach((template, index) => {
+    for (const occurrence of template.occurrences) {
+      const bitLength = templateReferenceBitLength(index, occurrence.holes);
+      const baseline = legacyCosts[occurrence.start + occurrence.length] - legacyCosts[occurrence.start];
+      const legacySavings = baseline - bitLength;
+      if (legacySavings <= 2) continue;
+      const candidate = {
+        type: "template",
+        index,
+        templateType: template.type,
+        zoneKind: template.zoneKind,
+        length: occurrence.length,
+        holes: occurrence.holes,
+        bitLength,
+        legacySavings,
+        savings: occurrence.length * 8 - bitLength
+      };
+      const list = candidates.get(occurrence.start) || [];
+      list.push(candidate);
+      list.sort((left, right) =>
+        right.legacySavings - left.legacySavings || right.length - left.length);
+      candidates.set(occurrence.start, list);
+    }
+  });
+  return candidates;
+}
+
 function hashUnit (value) {
   let hash = 2166136261;
   for (let index = 0; index < value.length; index ++) {
@@ -567,34 +1178,35 @@ function selectLexiconCandidates (candidates, legacyCosts) {
   const byGain = (a, b) =>
     b.optimisticGain - a.optimisticGain || b.bytes.length - a.bytes.length;
   ranked.sort(byGain);
-  const guaranteedWords = ranked.filter(candidate => !candidate.phrase).slice(0, 128);
-  const guaranteed = new Set(guaranteedWords);
-  const pool = [
-    ...guaranteedWords,
-    ...ranked.filter(candidate => !guaranteed.has(candidate)).slice(
-      0,
-      MAX_LEXICON_ENTRIES - guaranteedWords.length
-    )
-  ].sort(byGain);
+  const words = ranked.filter(candidate => !candidate.phrase);
+  const phrases = ranked.filter(candidate => candidate.phrase);
   const selected = [];
-  for (const candidate of pool) {
-    if (selected.length >= MAX_LEXICON_ENTRIES) break;
-    // Overlapping n-grams otherwise fragment one high-frequency phrase into
-    // dozens of low-frequency one-token extensions.  Keep the best-scoring
-    // member of each nested phrase family; words remain independent symbols.
-    if (
-      candidate.phrase &&
-      selected.some(existing => existing.phrase && phrasesCompete(candidate.value, existing.value))
-    ) continue;
-    const tokenCost = 4 + gammaBitLength(selected.length + 1);
-    const gain = candidate.baseline -
-      candidate.positions.length * tokenCost - candidate.definitionCost;
-    if (gain > 2) selected.push(candidate);
-  }
+  const admit = pool => {
+    for (const candidate of pool) {
+      if (selected.length >= MAX_LEXICON_ENTRIES) break;
+      // Overlapping n-grams otherwise fragment one high-frequency phrase into
+      // dozens of low-frequency one-token extensions. Keep the strongest
+      // member of each phrase family, while the word phase retains its stable
+      // low indices before any phrase is admitted.
+      if (
+        candidate.phrase &&
+        selected.some(existing => existing.phrase && phrasesCompete(candidate.value, existing.value))
+      ) continue;
+      const tokenCost = 4 + gammaBitLength(selected.length + 1);
+      const gain = candidate.baseline -
+        candidate.positions.length * tokenCost - candidate.definitionCost;
+      if (gain > 2) selected.push(candidate);
+    }
+  };
+
+  const firstWordPhase = words.slice(0, 320);
+  admit(firstWordPhase);
+  admit(phrases);
+  admit(words.slice(firstWordPhase.length));
   return selected.map(candidate => candidate.bytes);
 }
 
-function collectLexemeCandidates (text, legacyCosts) {
+function collectLexemeCandidates (text, legacyCosts, zones) {
   const candidates = new Map();
   const units = [];
   let byteCursor = 0;
@@ -608,6 +1220,7 @@ function collectLexemeCandidates (text, legacyCosts) {
       value,
       word: match[1] !== undefined,
       whitespace: match[2] !== undefined,
+      zoneKind: structuralZoneAt(zones, match.index).kind,
       codeStart: match.index,
       codeEnd: match.index + value.length,
       byteStart: byteCursor,
@@ -633,8 +1246,6 @@ function collectLexemeCandidates (text, legacyCosts) {
     candidate.positions.push(unit.byteStart);
     candidates.set(value, candidate);
   }
-  const wordLexicon = selectLexiconCandidates(candidates, legacyCosts);
-
   // A fixed-size first-seen table makes repeated phrase discovery bounded.
   // It stores only hashes and source offsets; actual strings enter the map
   // after a second exact occurrence proves that the sector is reusable.
@@ -656,6 +1267,7 @@ function collectLexemeCandidates (text, legacyCosts) {
       end ++
     ) {
       const unit = units[end];
+      if (unit.zoneKind !== units[start].zoneKind) break;
       sequenceHash = Math.imul(sequenceHash ^ unit.hash, 16777619) >>> 0;
       if (unit.word) words ++;
       const count = end - start + 1;
@@ -697,10 +1309,7 @@ function collectLexemeCandidates (text, legacyCosts) {
     }
   }
 
-  return {
-    wordLexicon,
-    combinedLexicon: selectLexiconCandidates(candidates, legacyCosts)
-  };
+  return selectLexiconCandidates(candidates, legacyCosts);
 }
 
 function pruneLexicon (entries, tokens, legacyCosts) {
@@ -751,71 +1360,79 @@ function buildLexiconHeaderBits (entries) {
   return bits;
 }
 
-function optimizeLexicon (initialLexicon, bytes, legacyCosts, baseline = null) {
-  let lexicon = initialLexicon;
-  let best = baseline?.plan || {
-    tokens: tokenize(bytes, true, legacyCosts, dictionaryTrie),
-    lexicon: []
-  };
-  let bestBits = baseline?.bits ?? structuredPlanBitLength(best);
-
-  for (let pass = 0; pass < 4; pass ++) {
-    const trie = lexicon.length ? buildDictionaryTrie(lexicon) : dictionaryTrie;
-    // Settle the lexical grammar without allowing a large sparse-delta record
-    // to hide all of the words/phrases it spans during admission.  The plan is
-    // still priced with structural records enabled immediately afterwards.
-    const lexicalTokens = tokenize(bytes, false, null, trie);
-    const tokens = tokenize(bytes, true, legacyCosts, trie);
-    const plan = { tokens, lexicon };
-    const bits = structuredPlanBitLength(plan);
-    if (bits < bestBits) {
-      best = plan;
-      bestBits = bits;
+function buildTemplateHeaderBits (templates) {
+  let bits = gammaBits(templates.length + 1);
+  let byteLength = 0;
+  for (const template of templates) {
+    bits += gammaBits(template.holeCount);
+    for (const segment of template.staticSegments) {
+      bits += gammaBits(segment.length + 1);
+      byteLength += segment.length;
     }
-    const pruned = pruneLexicon(lexicon, lexicalTokens, legacyCosts);
-    if (
-      pruned.length === lexicon.length &&
-      pruned.every((entry, index) => entry === lexicon[index])
-    ) break;
-    lexicon = pruned;
   }
 
-  return best;
+  const definitions = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const template of templates) {
+    for (const segment of template.staticSegments) {
+      definitions.set(segment, offset);
+      offset += segment.length;
+    }
+  }
+  for (const token of tokenize(definitions)) {
+    bits += tokenBits(token, LEGACY_VERSION);
+  }
+  return bits;
 }
 
-function structuredPlanBitLength (plan) {
-  assignPatchGrammar(plan.tokens);
-  return buildLexiconHeaderBits(plan.lexicon).length + plan.tokens.reduce(
-    (total, token) => total + tokenBits(token, STRUCTURED_VERSION).length,
-    0
-  );
+function sameEntries (left, right) {
+  return left.length === right.length && left.every((entry, index) => entry === right[index]);
 }
 
-function buildStructuredTokens (text, bytes, legacyCosts) {
-  const candidates = collectLexemeCandidates(text, legacyCosts);
-  const emptyPlan = {
-    tokens: tokenize(bytes, true, legacyCosts, dictionaryTrie),
-    lexicon: []
-  };
-  const emptyBits = structuredPlanBitLength(emptyPlan);
-  const wordPlan = optimizeLexicon(
-    candidates.wordLexicon,
-    bytes,
-    legacyCosts,
-    { plan: emptyPlan, bits: emptyBits }
-  );
-  const wordBits = structuredPlanBitLength(wordPlan);
+function settleLexicon (initialLexicon, bytes, legacyCosts) {
+  let lexicon = initialLexicon;
+  for (let pass = 0; pass < 3; pass ++) {
+    const trie = lexicon.length ? buildDictionaryTrie(lexicon) : dictionaryTrie;
+    const tokens = tokenize(bytes, false, null, trie);
+    const pruned = pruneLexicon(lexicon, tokens, legacyCosts);
+    if (sameEntries(pruned, lexicon)) break;
+    lexicon = pruned;
+  }
+  return lexicon;
+}
 
-  // Phrase discovery must earn its keep after definitions, record prefixes,
-  // exact copies, and sparse deltas all compete for the same bytes.  Compare
-  // the two actual v2 streams rather than trusting overlapping optimistic
-  // gains; the cheaper document-local grammar wins deterministically.
-  return optimizeLexicon(
-    candidates.combinedLexicon,
+function usedTemplateEntries (templates, tokens) {
+  const used = new Set(tokens
+    .filter(token => token.type === "template")
+    .map(token => token.index));
+  return templates.filter((template, index) => used.has(index));
+}
+
+function buildStructuredTokens (text, bytes, legacyCosts, kind) {
+  const zones = scanStructuralZones(text, kind);
+  let lexicon = settleLexicon(
+    collectLexemeCandidates(text, legacyCosts, zones),
     bytes,
-    legacyCosts,
-    { plan: wordPlan, bits: wordBits }
+    legacyCosts
   );
+  let templates = collectStructuralTemplates(text, bytes, zones, legacyCosts);
+  let tokens = [];
+
+  // Every v2 phase runs in a fixed order. These passes only garbage-collect
+  // definitions that no emitted record references; they never run or select
+  // the v1 encoder as a competing whole-document result.
+  for (let pass = 0; pass < 4; pass ++) {
+    const trie = lexicon.length ? buildDictionaryTrie(lexicon) : dictionaryTrie;
+    const templateCandidates = buildTemplateCandidateMap(templates, legacyCosts);
+    tokens = tokenize(bytes, true, legacyCosts, trie, templateCandidates);
+    const nextLexicon = pruneLexicon(lexicon, tokens, legacyCosts);
+    const nextTemplates = usedTemplateEntries(templates, tokens);
+    if (sameEntries(nextLexicon, lexicon) && sameEntries(nextTemplates, templates)) break;
+    lexicon = nextLexicon;
+    templates = nextTemplates;
+  }
+
+  return { tokens, lexicon, templates, zones };
 }
 
 function tokenBits (token, version) {
@@ -836,6 +1453,17 @@ function tokenBits (token, version) {
     let bits = (version === LEGACY_VERSION ? "111" : "11110") +
       gammaBits(token.bytes.length);
     for (const byte of token.bytes) bits += fixedBits(byte, 8);
+    return bits;
+  }
+  if (token.type === "template") {
+    // Patch distances are always at least MIN_PATCH, so distance 1 is a free
+    // escape inside the existing patch-reuse branch. Templates therefore add
+    // no extra discriminator bit to ordinary or reused patch records.
+    let bits = "111111" + gammaBits(1) + gammaBits(token.index + 1);
+    for (const hole of token.holes) {
+      bits += gammaBits(hole.length + 1);
+      for (const byte of hole) bits += fixedBits(byte, 8);
+    }
     return bits;
   }
   if (token.type === "patch") {
@@ -956,10 +1584,11 @@ function createEncodingPlan (text, kind, version, bytes = null, legacyTokens = n
   bytes ||= encoder.encode(text);
   let tokens;
   let lexicon = [];
+  let templates = [];
   if (version === STRUCTURED_VERSION) {
     legacyTokens ||= tokenize(bytes);
     const legacyCosts = buildLegacyCostPrefix(bytes.length, legacyTokens);
-    ({ tokens, lexicon } = buildStructuredTokens(text, bytes, legacyCosts));
+    ({ tokens, lexicon, templates } = buildStructuredTokens(text, bytes, legacyCosts, kind));
   } else {
     tokens = tokenize(bytes);
   }
@@ -971,6 +1600,9 @@ function createEncodingPlan (text, kind, version, bytes = null, legacyTokens = n
   const lexiconBits = version === STRUCTURED_VERSION
     ? buildLexiconHeaderBits(lexicon)
     : "";
+  const templateBits = version === STRUCTURED_VERSION
+    ? buildTemplateHeaderBits(templates)
+    : "";
   const tokenSequences = tokens.map(token => tokenBits(token, version));
   const tokenBitLength = tokenSequences.reduce((total, bits) => total + bits.length, 0);
   const counts = {
@@ -980,14 +1612,23 @@ function createEncodingPlan (text, kind, version, bytes = null, legacyTokens = n
     copy: 0,
     raw: 0,
     patch: 0,
+    template: 0,
     lexicon: lexicon.length,
     lexiconUse: 0,
+    templates: templates.length,
+    templateUse: 0,
+    sectorTemplateUse: 0,
+    lineTemplateUse: 0,
     ...grammarCounts
   };
   for (const token of tokens) {
     counts[token.type] ++;
     if (token.type === "lexeme") {
       counts.lexiconUse ++;
+    } else if (token.type === "template") {
+      counts.templateUse ++;
+      if (token.templateType === "sector") counts.sectorTemplateUse ++;
+      if (token.templateType === "line") counts.lineTemplateUse ++;
     }
   }
 
@@ -999,9 +1640,12 @@ function createEncodingPlan (text, kind, version, bytes = null, legacyTokens = n
     tokenSequences,
     lexicon,
     lexiconBits,
+    templates,
+    templateBits,
     checksum,
     lengthBits,
-    bitLength: 16 + 3 + 2 + lengthBits.length + 32 + lexiconBits.length + tokenBitLength,
+    bitLength: 16 + 3 + 2 + lengthBits.length + 32 + lexiconBits.length +
+      templateBits.length + tokenBitLength,
     counts
   };
 }
@@ -1012,6 +1656,7 @@ function encodePlan (plan, alphabet) {
     number = huffmanEncode(number, plan.tokenSequences[index]);
   }
   if (plan.version === STRUCTURED_VERSION) {
+    number = huffmanEncode(number, plan.templateBits);
     number = huffmanEncode(number, plan.lexiconBits);
   }
 
@@ -1086,6 +1731,7 @@ export function decompressText (payload, alphabet) {
   const output = [];
   const patchShapes = [];
   const lexicon = [];
+  const templates = [];
 
   if (version === STRUCTURED_VERSION) {
     const count = reader.readGamma() - 1;
@@ -1112,6 +1758,42 @@ export function decompressText (payload, alphabet) {
         definitionBytes.slice(definitionOffset, definitionOffset + length)
       ));
       definitionOffset += length;
+    }
+
+    const templateCount = reader.readGamma() - 1;
+    if (templateCount < 0 || templateCount > MAX_TEMPLATE_ENTRIES) {
+      throw new Error("Invalid ln.kr structural template count");
+    }
+    let templateBytes = 0;
+    const templateShapes = [];
+    for (let entry = 0; entry < templateCount; entry ++) {
+      const holeCount = reader.readGamma();
+      if (holeCount < 1 || holeCount > MAX_TEMPLATE_TOKENS) {
+        throw new Error("Invalid ln.kr structural template arity");
+      }
+      const lengths = [];
+      for (let segment = 0; segment <= holeCount; segment ++) {
+        const length = reader.readGamma() - 1;
+        if (length < 0 || length > MAX_TEMPLATE_BYTES) {
+          throw new Error("Invalid ln.kr structural template segment");
+        }
+        templateBytes += length;
+        if (templateBytes > expectedLength) {
+          throw new Error("ln.kr structural templates exceed the document length");
+        }
+        lengths.push(length);
+      }
+      templateShapes.push({ holeCount, lengths });
+    }
+    const staticBytes = decodeLegacySection(reader, templateBytes);
+    let staticOffset = 0;
+    for (const shape of templateShapes) {
+      const staticSegments = shape.lengths.map(length => {
+        const segment = Uint8Array.from(staticBytes.slice(staticOffset, staticOffset + length));
+        staticOffset += length;
+        return segment;
+      });
+      templates.push({ holeCount: shape.holeCount, staticSegments });
     }
   }
 
@@ -1170,7 +1852,26 @@ export function decompressText (payload, alphabet) {
       }
 
       const reuseShape = reader.readBit() === 1;
-      const distance = reader.readGamma();
+      let distance = reader.readGamma();
+      if (reuseShape && distance === 1) {
+        const templateIndex = reader.readGamma() - 1;
+        const template = templates[templateIndex];
+        if (!template) throw new Error(`Unknown ln.kr structural template: ${templateIndex}`);
+        for (let hole = 0; hole < template.holeCount; hole ++) {
+          const staticSegment = template.staticSegments[hole];
+          ensureLength(staticSegment.length);
+          output.push(...staticSegment);
+          const holeLength = reader.readGamma() - 1;
+          ensureLength(holeLength);
+          for (let index = 0; index < holeLength; index ++) {
+            output.push(Number(reader.readFixed(8)));
+          }
+        }
+        const trailing = template.staticSegments.at(-1);
+        ensureLength(trailing.length);
+        output.push(...trailing);
+        continue;
+      }
       let length;
       let shape;
 

@@ -353,6 +353,13 @@ async function generateLink () {
         `${encoded.stats.lexiconUse} grammar references`
       );
     }
+    if (encoded.stats.templates) {
+      recordSummary.push(
+        `${encoded.stats.templates} structural templates`,
+        `${encoded.stats.sectorTemplateUse} sector references`,
+        `${encoded.stats.lineTemplateUse} line references`
+      );
+    }
     if (encoded.stats.patch) {
       recordSummary.push(`${encoded.stats.patch} structural delta records`);
       if (encoded.stats.patchReuse) {

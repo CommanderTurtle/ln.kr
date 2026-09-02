@@ -72,7 +72,8 @@ v2 retains the first three v1 record prefixes. Its `111` branch is extended:
 | `1110` | Elias-gamma document-grammar index |
 | `11110` | Elias-gamma length followed by exact 8-bit literal bytes |
 | `111110` | Prior block plus a newly defined sparse residual shape |
-| `111111` | Prior block plus a previously defined residual shape |
+| `111111` + distance `>= 32` | Prior block plus a previously defined residual shape |
+| `111111` + reserved distance `1` | Exact line/sector-template reference and variable slots |
 
 After the CRC and before body records, a v2 payload carries its local grammar:
 
@@ -86,13 +87,28 @@ earlier definition ranges; it does not require the phrase bytes to be repeated
 literally in the header. The combined definition bytes may not exceed the
 document's declared byte length, and every entry is bounded to 2–192 bytes.
 
+The lexical table is immediately followed by the structural-template table:
+
+1. Elias-gamma of `template count + 1`;
+2. for each template, its nonzero hole count;
+3. `hole count + 1` static-segment lengths, each encoded as `length + 1` so an
+   empty leading, interior, or trailing segment remains exact; and
+4. all static segments concatenated and encoded as one v1 record stream.
+
+A template body record supplies the template index, then one `length + 1` and
+the exact bytes for each variable hole. Decoding alternates
+`static0, hole0, static1, ... staticN`. Thus an entire CSS rule, HTML element,
+JavaScript statement, JSON object, Markdown block, or residual line family can
+be one reference plus only its differing fields. Distance `1` is an unambiguous
+escape because a sparse block reference is never shorter than 32 bytes.
+
 The encoder discovers repeated exact words/identifiers and repeated sequences
-of 2–16 generic word, whitespace, and punctuation units. It does not parse a
-programming or markup language. Competing nested phrases are ranked by their
-actual savings, and word-only and word-plus-phrase plans are priced as complete
-v2 streams. Only the smaller v2 grammar is emitted. A short bounded lookahead
-prevents a copy beginning on adjacent whitespace from hiding a cheaper phrase
-symbol one byte later.
+of 2–16 generic word, whitespace, and punctuation units. A deterministic zone
+scan also marks HTML body/style/script regions, Markdown fences and authored
+HTML, and sustained CSS/JavaScript/JSON sectors. The scanner supplies candidate
+boundaries only; it never changes a byte or makes decoding depend on a language
+parser. A short bounded lookahead prevents a copy beginning on adjacent
+whitespace from hiding a cheaper grammar symbol one byte later.
 
 A full structural definition contains:
 
@@ -138,11 +154,11 @@ some early or interior bytes changed. Only the strongest candidates receive a
 byte-for-byte residual scan. The candidate must be at least 32 bytes, may use
 at most 128 residual runs, and may never read undecoded future output.
 
-Each grammar entry and structural candidate is compared against the estimated
-exact v1 record cost over the same bytes, not merely against raw length. The
-user selects v1 or v2 explicitly; the default path never plans both formats.
-Within v2, candidate grammars compete against other v2 plans only. Thus v2 data
-can form a lossless chain
+The v1 record vocabulary supplies a local bit-price prefix over the source;
+this is not a second whole-document encoding. v2 always runs its zone, lexical,
+sector, delta, and remaining-line phases, then removes definitions that no
+emitted record references. The user selects v1 or v2 explicitly, and the
+default path never plans both formats. v2 data can form a lossless chain
 
 ```text
 B0 ──Δ1──> B1 ──Δ2──> B2 ──Δ3──> ... ──Δn──> Bn

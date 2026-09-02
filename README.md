@@ -23,23 +23,30 @@ can additionally ask the optional stateless resolver to fetch a public URL.
 
 The frozen v1 grammar combines a ranked code/Markdown dictionary with
 prior-output references. It is the default and does no structural discovery.
-The visible **Structural v2** switch adds a payload-local document grammar and
-language-independent structural deltas. Repeated words, identifiers, and
-multi-token punctuation/whitespace phrases become short local symbols whose
-definitions are themselves compressed. A whole similar earlier byte interval
-can also become one reference carrying only its sparse changed runs. Recurring
-residual layouts become reusable grammar shapes, so later sectors transmit the
-shape reference and their exact changed bytes rather than repeating layout
-metadata. Exponentially spaced anchors find candidate regions without a
-language parser.
+The visible **Structural v2** switch runs one deterministic four-phase
+pipeline:
 
-The choice is explicit: v1 runs only v1, and v2 runs only v2. Inside v2,
-word-only and phrase-aware grammar candidates are measured as complete v2
-streams, so an unhelpful phrase table is never selected merely because it
-reduced a record count. v2 is useful for repeated prose vocabulary, markup,
-objects, rules, functions, components, and other near-duplicate sectors.
-Both formats decode on the same page. The byte count, UTF-8 validation,
-trailing-data check, and CRC-32 must all agree before a document is rendered.
+1. map HTML body/style/script regions, Markdown and its fenced languages or
+   authored HTML, and sustained CSS/JavaScript/JSON-looking sectors;
+2. map repeated words, identifiers, punctuation/whitespace phrases, and the
+   frozen technical dictionary to short document-local symbols;
+3. map whole brace/element/paragraph sectors to exact templates or prior-byte
+   regions plus sparse residuals; and
+4. map remaining repeated line families to one static template plus their
+   exact variable slots.
+
+Local word, phrase, line, and sector definitions are carried inside the URL
+and are themselves compressed with v1's fixed records. Reconstructed blocks
+can become references for later blocks, and recurring residual layouts reuse
+one shape definition. Format recognition only supplies byte boundaries; it
+never rewrites, normalizes, or semantically evaluates the source.
+
+The choice is explicit: v1 runs only v1, and v2 runs only the full v2 pipeline.
+There is no whole-document v1 trial, fallback, or auto-selection inside v2.
+The fixed v1 record costs are reused as the local price scale for references,
+and unreferenced definitions are discarded deterministically. Both formats
+decode on the same page. The byte count, UTF-8 validation, trailing-data check,
+and CRC-32 must all agree before a document is rendered.
 
 See [FORMAT.md](FORMAT.md) for the wire format and
 [STRUCTURAL-COMPRESSION.md](STRUCTURAL-COMPRESSION.md) for the design attempts,
