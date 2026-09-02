@@ -18,7 +18,11 @@ import {
 import { decodeDocumentPayload } from "./payload.js";
 import { compressTextV1, compressTextV2, detectKind } from "./text-compress.js";
 import { renderContent } from "./render.js";
-import { expandSourceIncludes } from "./source-includes.js";
+import {
+  applySourceLineSlice,
+  expandSourceIncludes,
+  splitSourceLineSlice
+} from "./source-includes.js";
 import {
   executablePrefixForKind,
   splitExecutableFragment
@@ -468,7 +472,7 @@ const requestedSourceKinds = Object.freeze({
   "source-html": "html"
 });
 
-async function resolveSourceLink (target, mode, generation) {
+async function resolveSourceLink (target, mode, generation, lineSlice = null) {
   hidePrimarySections();
   setHeaderMode("link");
   currentTarget = target;
@@ -496,7 +500,7 @@ async function resolveSourceLink (target, mode, generation) {
       showToast("Binary source opened through the direct resolver");
       return;
     }
-    const fetchedSource = await response.text();
+    const fetchedSource = applySourceLineSlice(await response.text(), lineSlice);
     const kind = requestedKind === "auto"
       ? sourceKindHint(sourceURL, contentType) || detectKind(fetchedSource)
       : requestedKind;
@@ -708,7 +712,15 @@ function decodeLocation () {
 
       const linkage = splitLinkFragment(fragment);
       if (linkage.mode) {
-        fragment = linkage.payload;
+        let lineSlice = null;
+        if (linkage.mode === "source" || linkage.mode === "source-live" ||
+          linkage.mode.startsWith("source-")) {
+          const sliced = splitSourceLineSlice(linkage.payload);
+          fragment = sliced.payload;
+          lineSlice = sliced.lineSlice;
+        } else {
+          fragment = linkage.payload;
+        }
         if (fragment.startsWith("q:")) {
           fragment = fragment.slice(2);
           alphabetHint = outputAlphabetQR;
@@ -718,7 +730,7 @@ function decodeLocation () {
         else if (linkage.mode === "image") showImageAlias(target);
         else if (linkage.mode === "source" || linkage.mode === "source-live" ||
           linkage.mode.startsWith("source-")) {
-          void resolveSourceLink(target, linkage.mode, navigationGeneration);
+          void resolveSourceLink(target, linkage.mode, navigationGeneration, lineSlice);
         }
         else showGuardedLink(target);
         return true;

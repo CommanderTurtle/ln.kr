@@ -125,6 +125,13 @@ changing that engine. It produces five deliberately different transports:
   Edit a copy still expose the exact authored link rather than the expansion.
   Includes may nest; repeated targets are fetched once. Inline links and
   `#lr:` links are never treated as includes.
+- Append `::~START[:SPAN]` to a source link to select raw, zero-based lines
+  before rendering or nested-module expansion. This follows CMD substring
+  semantics: `::~0:5` takes the first five lines, `::~12` takes line 12 through
+  EOF, and `::~12:-3` takes line 12 through the end delimiter three lines back
+  from EOF. A negative start counts from EOF as well. Original LF, CRLF, and CR
+  endings are preserved byte-for-byte; different slices of one target still
+  share its single fetch.
 - **Copy live** uses the existing `#hs:` route and the same detection. HTML and
   Markdown continue into their existing `#h:`/`#m:` expanded viewers;
   JavaScript opens in its existing editable viewer with the run controls.
