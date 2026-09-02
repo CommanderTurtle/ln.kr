@@ -1,13 +1,21 @@
 import {
+  countAlphabetSymbols,
   huffmanEncode,
   numberToString,
   stringToNumber
 } from "./compress.js";
 
 const MAGIC = 0x4c4e; // "LN", read least-significant bit first.
-const VERSION = 1;
+const LEGACY_VERSION = 1;
+const STRUCTURED_VERSION = 2;
 const MIN_COPY = 4;
 const MAX_CHAIN = 64;
+const MIN_PATCH = 32;
+const MAX_PATCH = 4096;
+const MAX_PATCH_RUNS = 128;
+const PATCH_PROBE_STEP = 16;
+const PATCH_COPY_THRESHOLD = 128;
+const PATCH_OFFSETS = Object.freeze([0, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048]);
 
 const KIND_TO_NUMBER = Object.freeze({
   text: 0,
@@ -169,6 +177,139 @@ function findCopyMatch (bytes, position, chains) {
   return best;
 }
 
+function patchBitLength (distance, length, runs, runBits) {
+  return 4 + gammaBitLength(distance) +
+    gammaBitLength(length - MIN_PATCH + 1) +
+    gammaBitLength(runs) + runBits;
+}
+
+function evaluatePatchCandidate (bytes, position, source, legacyCosts) {
+  const distance = position - source;
+  const maxLength = Math.min(bytes.length - position, distance, MAX_PATCH);
+  if (distance < MIN_PATCH || maxLength < MIN_PATCH) return null;
+
+  // A small evenly-spaced sample rejects unrelated occurrences of a common
+  // four-byte anchor before the exact residual scan does any substantial work.
+  let sampleMatches = 0;
+  const sampleCount = Math.min(24, maxLength);
+  for (let sample = 0; sample < sampleCount; sample ++) {
+    const offset = Math.floor(sample * (maxLength - 1) / Math.max(1, sampleCount - 1));
+    if (bytes[source + offset] === bytes[position + offset]) sampleMatches ++;
+  }
+  if (sampleMatches / sampleCount < 0.45) return null;
+
+  const runs = [];
+  let runBits = 0;
+  let different = 0;
+  let matchingStreak = 0;
+  let previousRunEnd = 0;
+  let best = null;
+
+  for (let offset = 0; offset < maxLength; offset ++) {
+    if (bytes[source + offset] !== bytes[position + offset]) {
+      matchingStreak = 0;
+      different ++;
+      const current = runs.at(-1);
+      if (current && current.end === offset) {
+        const oldLength = current.end - current.start;
+        current.end ++;
+        runBits += gammaBitLength(oldLength + 1) - gammaBitLength(oldLength) + 8;
+      } else {
+        if (runs.length >= MAX_PATCH_RUNS) break;
+        const gap = offset - previousRunEnd;
+        runs.push({ start: offset, end: offset + 1 });
+        runBits += gammaBitLength(gap + 1) + gammaBitLength(1) + 8;
+      }
+      previousRunEnd = runs.at(-1).end;
+    } else {
+      matchingStreak ++;
+    }
+
+    const length = offset + 1;
+    if (
+      length < MIN_PATCH ||
+      different === 0 ||
+      different / length > 0.30 ||
+      (matchingStreak < MIN_COPY && length !== maxLength)
+    ) continue;
+
+    const bitLength = patchBitLength(distance, length, runs.length, runBits);
+    const legacyBitLength = legacyCosts[position + length] - legacyCosts[position];
+    const legacySavings = legacyBitLength - bitLength;
+    const savings = length * 8 - bitLength;
+    if (
+      legacySavings > 2 &&
+      (!best || legacySavings > best.legacySavings ||
+        (legacySavings === best.legacySavings && savings > best.savings))
+    ) {
+      best = {
+        distance,
+        length,
+        bitLength,
+        savings,
+        legacySavings
+      };
+    }
+  }
+
+  if (best) {
+    best.runs = runs
+      .filter(run => run.start < best.length)
+      .map(run => ({
+        start: run.start,
+        bytes: bytes.slice(
+          position + run.start,
+          position + Math.min(run.end, best.length)
+        )
+      }));
+  }
+  return best;
+}
+
+function findPatchMatch (bytes, position, chains, legacyCosts) {
+  if (position < MIN_PATCH || position + MIN_PATCH > bytes.length) return null;
+
+  const sourceVotes = new Map();
+  for (const offset of PATCH_OFFSETS) {
+    if (position + offset + MIN_COPY > bytes.length) break;
+    const candidates = chains.get(hash4(bytes, position + offset));
+    if (!candidates) continue;
+    const offsetSources = new Set();
+    for (let item = candidates.length - 1, taken = 0; item >= 0 && taken < 4; item --, taken ++) {
+      const source = candidates[item] - offset;
+      const distance = position - source;
+      if (source >= 0 && distance >= MIN_PATCH && offset + MIN_COPY <= distance) {
+        offsetSources.add(source);
+      }
+    }
+    for (const source of offsetSources) {
+      sourceVotes.set(source, (sourceVotes.get(source) || 0) + 1);
+    }
+  }
+
+  // Matching anchors at several exponentially-spaced offsets form a cheap,
+  // multiscale fingerprint.  A real aligned structure accrues votes; a common
+  // word or brace sequence normally does not.  Only the two strongest prior
+  // blocks receive the exact residual scan.
+  const sources = [...sourceVotes]
+    .filter(([, votes]) => votes >= 2)
+    .sort(([sourceA, votesA], [sourceB, votesB]) =>
+      votesB - votesA || sourceB - sourceA)
+    .slice(0, 2)
+    .map(([source]) => source);
+
+  let best = null;
+  for (const source of sources) {
+    const candidate = evaluatePatchCandidate(bytes, position, source, legacyCosts);
+    if (
+      candidate &&
+      (!best || candidate.legacySavings > best.legacySavings ||
+        (candidate.legacySavings === best.legacySavings && candidate.distance < best.distance))
+    ) best = candidate;
+  }
+  return best;
+}
+
 function addChains (bytes, chains, start, end) {
   for (let position = start; position < end; position ++) {
     if (position + MIN_COPY > bytes.length) break;
@@ -180,17 +321,30 @@ function addChains (bytes, chains, start, end) {
   }
 }
 
-function tokenize (bytes) {
+function tokenize (bytes, structured = false, legacyCosts = null) {
   const tokens = [];
   const chains = new Map();
   let position = 0;
+  let lastPatchProbe = -PATCH_PROBE_STEP;
 
   while (position < bytes.length) {
     const dictionary = findDictionaryMatch(bytes, position);
     const copy = findCopyMatch(bytes, position, chains);
+    let patch = null;
+    if (
+      structured &&
+      position - lastPatchProbe >= PATCH_PROBE_STEP &&
+      (!copy || copy.length < PATCH_COPY_THRESHOLD)
+    ) {
+      lastPatchProbe = position;
+      patch = findPatchMatch(bytes, position, chains, legacyCosts);
+    }
     const start = position;
 
-    if (copy && (!dictionary || copy.savings > dictionary.savings)) {
+    if (patch) {
+      tokens.push({ type: "patch", ...patch });
+      position += patch.length;
+    } else if (copy && (!dictionary || copy.savings > dictionary.savings)) {
       tokens.push({ type: "copy", ...copy });
       position += copy.length;
     } else if (dictionary) {
@@ -220,13 +374,31 @@ function tokenize (bytes) {
       });
     }
 
+    tokens.at(-1).start = start;
     addChains(bytes, chains, start, position);
   }
 
   return tokens;
 }
 
-function tokenBits (token) {
+function buildLegacyCostPrefix (byteLength, tokens) {
+  const costs = new Float64Array(byteLength + 1);
+  let position = 0;
+  let accumulated = 0;
+
+  for (const token of tokens) {
+    while (position < token.start) costs[++position] = accumulated;
+    const rate = tokenBits(token, LEGACY_VERSION).length / token.length;
+    for (let offset = 0; offset < token.length; offset ++) {
+      accumulated += rate;
+      costs[++position] = accumulated;
+    }
+  }
+  while (position < byteLength) costs[++position] = accumulated;
+  return costs;
+}
+
+function tokenBits (token, version) {
   if (token.type === "ascii") {
     return "0" + fixedBits(token.byte, 7);
   }
@@ -238,8 +410,20 @@ function tokenBits (token) {
       gammaBits(token.length - MIN_COPY + 1);
   }
   if (token.type === "raw") {
-    let bits = "111" + gammaBits(token.bytes.length);
+    let bits = (version === LEGACY_VERSION ? "111" : "1110") +
+      gammaBits(token.bytes.length);
     for (const byte of token.bytes) bits += fixedBits(byte, 8);
+    return bits;
+  }
+  if (token.type === "patch") {
+    let bits = "1111" + gammaBits(token.distance) +
+      gammaBits(token.length - MIN_PATCH + 1) + gammaBits(token.runs.length);
+    let previousEnd = 0;
+    for (const run of token.runs) {
+      bits += gammaBits(run.start - previousEnd + 1) + gammaBits(run.bytes.length);
+      for (const byte of run.bytes) bits += fixedBits(byte, 8);
+      previousEnd = run.start + run.bytes.length;
+    }
     return bits;
   }
   throw new Error(`Unknown token type: ${token.type}`);
@@ -295,52 +479,150 @@ export function detectKind (text) {
   return "text";
 }
 
-/**
- * Compress exact UTF-8 text with the ln.kr v1 dictionary/reference grammar.
- * @returns {{payload: string, kind: string, stats: object}}
- */
-export function compressText (text, alphabet, requestedKind = "auto") {
-  if (typeof text !== "string") throw new TypeError("Text must be a string");
-  const kind = requestedKind === "auto" ? detectKind(text) : requestedKind;
-  if (!(kind in KIND_TO_NUMBER)) throw new Error(`Unsupported content kind: ${kind}`);
-
-  const bytes = encoder.encode(text);
-  const tokens = tokenize(bytes);
-  let number = 1n;
-  let tokenBitLength = 0;
-
-  for (let index = tokens.length - 1; index >= 0; index --) {
-    const bits = tokenBits(tokens[index]);
-    tokenBitLength += bits.length;
-    number = huffmanEncode(number, bits);
+function createEncodingPlan (text, kind, version, bytes = null, legacyTokens = null) {
+  bytes ||= encoder.encode(text);
+  let tokens;
+  if (version === STRUCTURED_VERSION) {
+    legacyTokens ||= tokenize(bytes);
+    const legacyCosts = buildLegacyCostPrefix(bytes.length, legacyTokens);
+    tokens = tokenize(bytes, true, legacyCosts);
+  } else {
+    tokens = tokenize(bytes);
   }
-
   const checksum = crc32(bytes);
   const lengthBits = gammaBits(bytes.length + 1);
+  const tokenSequences = tokens.map(token => tokenBits(token, version));
+  const tokenBitLength = tokenSequences.reduce((total, bits) => total + bits.length, 0);
+  const counts = { ascii: 0, dictionary: 0, copy: 0, raw: 0, patch: 0 };
+  for (const token of tokens) counts[token.type] ++;
+
+  return {
+    kind,
+    version,
+    bytes,
+    tokens,
+    tokenSequences,
+    checksum,
+    lengthBits,
+    bitLength: 16 + 3 + 2 + lengthBits.length + 32 + tokenBitLength,
+    counts
+  };
+}
+
+function encodePlan (plan, alphabet) {
+  let number = 1n;
+  for (let index = plan.tokenSequences.length - 1; index >= 0; index --) {
+    number = huffmanEncode(number, plan.tokenSequences[index]);
+  }
+
+  const { checksum, lengthBits, kind, version, bytes, tokens, counts } = plan;
   number = huffmanEncode(number, fixedBits(checksum, 32));
   number = huffmanEncode(number, lengthBits);
   number = huffmanEncode(number, fixedBits(KIND_TO_NUMBER[kind], 2));
-  number = huffmanEncode(number, fixedBits(VERSION, 3));
+  number = huffmanEncode(number, fixedBits(version, 3));
   number = huffmanEncode(number, fixedBits(MAGIC, 16));
 
   const payload = numberToString(number, alphabet);
-  const counts = { ascii: 0, dictionary: 0, copy: 0, raw: 0 };
-  for (const token of tokens) counts[token.type] ++;
 
   return {
     payload,
     kind,
     stats: {
+      version,
       bytes: bytes.length,
-      bits: 16 + 3 + 2 + lengthBits.length + 32 + tokenBitLength,
+      bits: plan.bitLength,
+      symbols: countAlphabetSymbols(payload, alphabet),
       tokens: tokens.length,
       ...counts
     }
   };
 }
 
+function minimumSymbolsForBitLength (bitLength, alphabetSize) {
+  let number = 1n << BigInt(bitLength);
+  const base = BigInt(alphabetSize);
+  let symbols = 0;
+  while (number > 0) {
+    number = (number - 1n) / base;
+    symbols ++;
+  }
+  return symbols;
+}
+
+function resolveKind (text, requestedKind) {
+  if (typeof text !== "string") throw new TypeError("Text must be a string");
+  const kind = requestedKind === "auto" ? detectKind(text) : requestedKind;
+  if (!(kind in KIND_TO_NUMBER)) throw new Error(`Unsupported content kind: ${kind}`);
+  return kind;
+}
+
+/** Frozen v1 encoder, retained for compatibility and size comparisons. */
+export function compressTextV1 (text, alphabet, requestedKind = "auto") {
+  const kind = resolveKind(text, requestedKind);
+  return encodePlan(createEncodingPlan(text, kind, LEGACY_VERSION), alphabet);
+}
+
+/** Structural v2 encoder for diagnostics and format conformance tests. */
+export function compressTextV2 (text, alphabet, requestedKind = "auto") {
+  const kind = resolveKind(text, requestedKind);
+  return encodePlan(createEncodingPlan(text, kind, STRUCTURED_VERSION), alphabet);
+}
+
 /**
- * Decode an ln.kr v1 text payload. Throws on a bad version, malformed record,
+ * Compress exact UTF-8 text.  v1 is always planned first; the structural v2
+ * candidate is selected only when it has fewer transport symbols and decodes
+ * back to the exact source.  Thus optimization cannot enlarge or corrupt a
+ * document, and old decoders remain sufficient for every v1-selected link.
+ * @returns {{payload: string, kind: string, stats: object}}
+ */
+export function compressText (text, alphabet, requestedKind = "auto") {
+  const kind = resolveKind(text, requestedKind);
+  const bytes = encoder.encode(text);
+  const legacyPlan = createEncodingPlan(text, kind, LEGACY_VERSION, bytes);
+  if (bytes.length < MIN_PATCH * 2) return encodePlan(legacyPlan, alphabet);
+
+  const structuredPlan = createEncodingPlan(
+    text,
+    kind,
+    STRUCTURED_VERSION,
+    bytes,
+    legacyPlan.tokens
+  );
+  if (
+    structuredPlan.counts.patch === 0 ||
+    structuredPlan.bitLength >= legacyPlan.bitLength
+  ) return encodePlan(legacyPlan, alphabet);
+
+  const structured = encodePlan(structuredPlan, alphabet);
+  const minimumLegacySymbols = minimumSymbolsForBitLength(
+    legacyPlan.bitLength,
+    alphabet.length
+  );
+  let legacy = null;
+  if (structured.stats.symbols >= minimumLegacySymbols) {
+    legacy = encodePlan(legacyPlan, alphabet);
+    if (structured.stats.symbols >= legacy.stats.symbols) return legacy;
+  }
+
+  try {
+    if (decompressText(structured.payload, alphabet).text !== text) {
+      return legacy || encodePlan(legacyPlan, alphabet);
+    }
+  } catch {
+    return legacy || encodePlan(legacyPlan, alphabet);
+  }
+
+  structured.stats.baselineBits = legacyPlan.bitLength;
+  structured.stats.savedBits = legacyPlan.bitLength - structuredPlan.bitLength;
+  if (legacy) {
+    structured.stats.baselineSymbols = legacy.stats.symbols;
+    structured.stats.savedSymbols = legacy.stats.symbols - structured.stats.symbols;
+  }
+  return structured;
+}
+
+/**
+ * Decode an ln.kr versioned text payload. Throws on a bad version, malformed record,
  * invalid UTF-8, trailing data, incorrect byte count, or checksum mismatch.
  */
 export function decompressText (payload, alphabet) {
@@ -349,7 +631,9 @@ export function decompressText (payload, alphabet) {
   if (magic !== MAGIC) throw new Error("Not an ln.kr text payload");
 
   const version = Number(reader.readFixed(3));
-  if (version !== VERSION) throw new Error(`Unsupported ln.kr version: ${version}`);
+  if (![LEGACY_VERSION, STRUCTURED_VERSION].includes(version)) {
+    throw new Error(`Unsupported ln.kr version: ${version}`);
+  }
 
   const kindNumber = Number(reader.readFixed(2));
   const expectedLength = reader.readGamma() - 1;
@@ -391,9 +675,38 @@ export function decompressText (payload, alphabet) {
       continue;
     }
 
-    const length = reader.readGamma();
-    ensureLength(length);
-    for (let index = 0; index < length; index ++) {
+    if (version === STRUCTURED_VERSION && reader.readBit() === 1) {
+      const distance = reader.readGamma();
+      const length = reader.readGamma() + MIN_PATCH - 1;
+      const runCount = reader.readGamma();
+      if (distance < 1 || distance > output.length || length > distance) {
+        throw new Error("Invalid ln.kr structural reference");
+      }
+      if (runCount < 1 || runCount > Math.min(MAX_PATCH_RUNS, length)) {
+        throw new Error("Invalid ln.kr structural residual count");
+      }
+      ensureLength(length);
+      const sourceStart = output.length - distance;
+      const block = output.slice(sourceStart, sourceStart + length);
+      let previousEnd = 0;
+      for (let run = 0; run < runCount; run ++) {
+        const start = previousEnd + reader.readGamma() - 1;
+        const runLength = reader.readGamma();
+        if (start < previousEnd || start + runLength > length) {
+          throw new Error("Invalid ln.kr structural residual range");
+        }
+        for (let index = 0; index < runLength; index ++) {
+          block[start + index] = Number(reader.readFixed(8));
+        }
+        previousEnd = start + runLength;
+      }
+      output.push(...block);
+      continue;
+    }
+
+    const rawLength = reader.readGamma();
+    ensureLength(rawLength);
+    for (let index = 0; index < rawLength; index ++) {
       output.push(Number(reader.readFixed(8)));
     }
   }
