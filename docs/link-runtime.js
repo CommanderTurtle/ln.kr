@@ -7,6 +7,9 @@ import {
 import { compress, decompress } from "./compress.js";
 
 const routePrefixes = Object.freeze([
+  ["sm:", "source-markdown"],
+  ["sj:", "source-javascript"],
+  ["sh:", "source-html"],
   ["hs:", "source-live"],
   ["lr:", "resolved"],
   ["i:", "image"],
@@ -29,12 +32,80 @@ export function splitLinkFragment (fragment) {
 }
 
 export function linkPrefixForMode (mode) {
+  if (mode === "source-markdown") return "sm:";
+  if (mode === "source-javascript") return "sj:";
+  if (mode === "source-html") return "sh:";
   if (mode === "source-live") return "hs:";
   if (mode === "resolved") return "lr:";
   if (mode === "image") return "i:";
   if (mode === "source") return "s:";
   if (mode === "guarded") return "l:";
   return "";
+}
+
+const sourceSuffixKinds = Object.freeze({
+  md: "markdown",
+  markdown: "markdown",
+  mdown: "markdown",
+  mkdn: "markdown",
+  js: "javascript",
+  mjs: "javascript",
+  cjs: "javascript",
+  jsx: "javascript",
+  ts: "javascript",
+  tsx: "javascript",
+  css: "text",
+  html: "html",
+  htm: "html",
+  xhtml: "html"
+});
+
+const sourceTypeKinds = Object.freeze({
+  "text/html": "html",
+  "application/xhtml+xml": "html",
+  "text/markdown": "markdown",
+  "text/x-markdown": "markdown",
+  "application/markdown": "markdown",
+  "text/javascript": "javascript",
+  "application/javascript": "javascript",
+  "text/ecmascript": "javascript",
+  "application/ecmascript": "javascript",
+  "text/typescript": "javascript",
+  "application/typescript": "javascript",
+  "text/css": "text"
+});
+
+const textualApplicationTypes = new Set([
+  "application/json",
+  "application/ld+json",
+  "application/xml",
+  "application/yaml",
+  "application/x-yaml",
+  "image/svg+xml"
+]);
+
+function normalizedMediaType (contentType) {
+  return String(contentType || "").split(";", 1)[0].trim().toLowerCase();
+}
+
+function targetSuffix (target) {
+  const pathname = new URL(validateLinkTarget(target, { inferProtocol: false })).pathname;
+  return pathname.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() || "";
+}
+
+/** Return only an explicit URL/MIME hint; source-text detection remains the fallback. */
+export function sourceKindHint (target, contentType = "") {
+  const mediaType = normalizedMediaType(contentType);
+  return sourceTypeKinds[mediaType] || sourceSuffixKinds[targetSuffix(target)] || "";
+}
+
+/** Binary responses stay on the byte resolver instead of being decoded as UTF-8 source. */
+export function isTextualSourceResponse (target, contentType = "") {
+  const mediaType = normalizedMediaType(contentType);
+  if (sourceKindHint(target, contentType)) return true;
+  if (!mediaType) return true;
+  return mediaType.startsWith("text/") || textualApplicationTypes.has(mediaType) ||
+    /\+(?:json|xml)$/.test(mediaType);
 }
 
 export function validateLinkTarget (input, { inferProtocol = true } = {}) {
