@@ -81,6 +81,12 @@ frozen dictionary and copy earlier definition ranges. A bounded lookahead also
 lets `space + grammar-symbol + space` beat one longer but more expensive exact
 copy; a byte-greedy parser would otherwise never reach the symbol.
 
+An exact pasted block is intentionally not converted into a template. v1's
+distance/length record already represents the complete recurrence more cheaply
+than defining its internal grammar again. After ordinary record selection, v2
+recounts actual lexeme and template references and removes any definition whose
+remaining references no longer repay its header and definition bytes.
+
 Every recurring word can therefore become a low-index local symbol. Words that
 occur only once remain exact variable material—storing a definition and one
 reference would merely move those bytes into the header. Punctuation,
@@ -134,12 +140,12 @@ reliably than percentages alone.
 | Corpus | UTF-8 bytes | v1 symbols | v2 symbols | v2 change from v1 |
 |---|---:|---:|---:|---:|
 | Linked generation workflow JSON | 1,196,728 | 117,322 | 103,834 | 11.5% smaller |
-| Mixed model README | 62,457 | 41,157 | 39,431 | 4.2% smaller |
-| Supplied research-report HTML | 67,965 | 33,130 | 32,432 | 2.1% smaller |
+| Mixed model README | 62,457 | 41,157 | 39,432 | 4.2% smaller |
+| Supplied research-report HTML | 67,965 | 33,130 | 32,408 | 2.2% smaller |
 | Supplied image-viewer JavaScript | 2,692 | 1,404 | 1,343 | 4.3% smaller |
 | Generated nested-object stress corpus | 249,219 | 19,617 | 15,392 | 21.5% smaller |
 | Generated repeated-rule stress corpus | 85,418 | 7,501 | 3,558 | 52.6% smaller |
-| Mixed HTML/CSS sector-template corpus | 16,196 | 3,643 | 1,896 | 48.0% smaller |
+| Mixed HTML/CSS structural corpus | 16,196 | 3,643 | 1,876 | 48.5% smaller |
 | Markdown residual-line corpus | 5,779 | 1,508 | 811 | 46.2% smaller |
 
 The large workflow falls from 1,196,728 source bytes to 103,834 link symbols,
@@ -148,10 +154,12 @@ strong; v2 removes another 13,488 symbols without a schema-specific decoder.
 
 The README and report results show the lexical layer doing work where aligned
 block deltas alone did little. On the supplied HTML, v2 retained 58 local
-grammar symbols used 412 times, two exact structural templates, and 23 sparse
-deltas. It removes 698 more transport symbols than v1. The mixed synthetic
-corpora separately prove that sector and residual-line records activate when
-the document actually contains those families.
+grammar symbols used 413 times and 23 sparse deltas. It removes 722 more
+transport symbols than v1. Candidate templates that lost their uses to cheaper
+exact-copy records were repriced and removed rather than carried as dead
+definitions. The mixed synthetic corpora separately prove that sector and
+residual-line records activate when the document actually contains those
+families.
 
 The supplied JavaScript is 50.1% shorter than its raw source after all phases.
 v2 combines seven local symbols used 26 times with four sparse-delta regions

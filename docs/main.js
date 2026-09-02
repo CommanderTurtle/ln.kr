@@ -9,13 +9,16 @@ import {
   decodeLinkTarget,
   encodeDirectLinkTarget,
   encodeLinkTarget,
+  isTextualSourceResponse,
   isImageLinkTarget,
   linkPrefixForMode,
+  sourceKindHint,
   splitLinkFragment
 } from "./link-runtime.js";
 import { decodeDocumentPayload } from "./payload.js";
-import { compressTextV1, compressTextV2 } from "./text-compress.js";
+import { compressTextV1, compressTextV2, detectKind } from "./text-compress.js";
 import { renderContent } from "./render.js";
+import { expandSourceIncludes } from "./source-includes.js";
 import {
   executablePrefixForKind,
   splitExecutableFragment
@@ -111,6 +114,7 @@ let currentLiveSourceLink = "";
 let currentImageLink = "";
 let currentTarget = "";
 let currentDocument = null;
+let currentRuntimeSource = "";
 let qrModule = null;
 let toastTimer = null;
 let runToken = null;
@@ -458,12 +462,20 @@ function showResolvedLink (target) {
   document.title = "ln.kr · resolved link";
 }
 
-async function resolveSourceLink (target, live, generation) {
+const requestedSourceKinds = Object.freeze({
+  "source-markdown": "markdown",
+  "source-javascript": "javascript",
+  "source-html": "html"
+});
+
+async function resolveSourceLink (target, mode, generation) {
   hidePrimarySections();
   setHeaderMode("link");
   currentTarget = target;
   const direct = directResolverURL(target);
-  elements.linkResolvedLabel.textContent = `Linkage · #${live ? "hs" : "s"}:`;
+  const live = mode === "source-live";
+  const requestedKind = requestedSourceKinds[mode] || "auto";
+  elements.linkResolvedLabel.textContent = `Linkage · #${linkPrefixForMode(mode)}`;
   elements.linkResolvedTarget.textContent = target;
   elements.linkResolvedOpen.href = direct;
   elements.linkResolvedFrame.src = "about:blank";
@@ -477,12 +489,26 @@ async function resolveSourceLink (target, live, generation) {
     });
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`.trim());
     const sourceURL = response.headers.get("x-lnkr-source-url") || target;
-    const source = anchorResolvedHTML(await response.text(), sourceURL);
+    const contentType = response.headers.get("content-type") || "";
+    if (!isTextualSourceResponse(sourceURL, contentType)) {
+      elements.linkResolvedFrame.src = direct;
+      document.title = "ln.kr · resolved bytes";
+      showToast("Binary source opened through the direct resolver");
+      return;
+    }
+    const fetchedSource = await response.text();
+    const kind = requestedKind === "auto"
+      ? sourceKindHint(sourceURL, contentType) || detectKind(fetchedSource)
+      : requestedKind;
+    const source = kind === "html"
+      ? anchorResolvedHTML(fetchedSource, sourceURL)
+      : fetchedSource;
     if (generation !== sourceResolveGeneration) return;
     await new Promise(resolve => window.requestAnimationFrame(resolve));
-    const encoded = compressTextV1(source, outputAlphabetASCII, "html");
+    const encoded = compressTextV1(source, outputAlphabetASCII, kind);
     if (generation !== sourceResolveGeneration) return;
-    history.replaceState(null, "", outputURL(encoded.payload, live ? "html" : ""));
+    const liveKind = live && ["markdown", "html"].includes(kind) ? kind : "";
+    history.replaceState(null, "", outputURL(encoded.payload, liveKind));
     decodeLocation();
   } catch (error) {
     if (generation !== sourceResolveGeneration) return;
@@ -627,6 +653,7 @@ function updateRunMode () {
 function showViewer (decoded, payload, alphabet) {
   hidePrimarySections();
   currentDocument = decoded;
+  currentRuntimeSource = decoded.text;
   setHeaderMode("text");
   elements.viewer.hidden = false;
   elements.viewerKind.textContent = decoded.kind;
@@ -635,9 +662,17 @@ function showViewer (decoded, payload, alphabet) {
   elements.viewerSummary.textContent = `${decoded.kind} · ${decoded.text.length.toLocaleString()} characters · format v${decoded.version}`;
   elements.sourceView.textContent = decoded.text;
   const generation = ++renderGeneration;
-  currentRender = renderContent(elements.preview, decoded.text, decoded.kind)
+  currentRender = expandSourceIncludes(decoded.text, {
+    appURL: rootURL(),
+    resolverURLForTarget: directResolverURL
+  }).then(expanded => {
+    if (generation !== renderGeneration) return;
+    currentRuntimeSource = expanded.text;
+    return renderContent(elements.preview, expanded.text, decoded.kind);
+  })
     .catch(error => {
       if (generation !== renderGeneration) return;
+      currentRuntimeSource = decoded.text;
       elements.preview.textContent = decoded.text;
       showToast(`Rendered preview failed: ${error.message || error}`, "error");
     });
@@ -681,8 +716,9 @@ function decodeLocation () {
         const { target } = decodeLinkTarget(fragment, alphabetHint);
         if (linkage.mode === "resolved") showResolvedLink(target);
         else if (linkage.mode === "image") showImageAlias(target);
-        else if (linkage.mode === "source" || linkage.mode === "source-live") {
-          void resolveSourceLink(target, linkage.mode === "source-live", navigationGeneration);
+        else if (linkage.mode === "source" || linkage.mode === "source-live" ||
+          linkage.mode.startsWith("source-")) {
+          void resolveSourceLink(target, linkage.mode, navigationGeneration);
         }
         else showGuardedLink(target);
         return true;
@@ -851,7 +887,7 @@ function revealRunner ({ expand, scroll }) {
 
 async function runCurrentDocument ({ expand = false, scroll = true } = {}) {
   if (!currentDocument) return;
-  if (currentDocument.kind === "markdown") await currentRender;
+  await currentRender;
   runToken = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
   elements.runner.hidden = false;
   elements.runnerLog.textContent = "";
@@ -864,8 +900,8 @@ async function runCurrentDocument ({ expand = false, scroll = true } = {}) {
       ? "allow-scripts allow-popups allow-popups-to-escape-sandbox"
       : "allow-scripts");
     elements.runnerFrame.srcdoc = allowNetwork
-      ? currentDocument.text
-      : `<meta http-equiv="Content-Security-Policy" content="${policy}"><script>${documentLinkBootstrap(runToken)}<\/script>${currentDocument.text}`;
+      ? currentRuntimeSource
+      : `<meta http-equiv="Content-Security-Policy" content="${policy}"><script>${documentLinkBootstrap(runToken)}<\/script>${currentRuntimeSource}`;
     revealRunner({ expand, scroll });
     return;
   }
@@ -884,7 +920,7 @@ async function runCurrentDocument ({ expand = false, scroll = true } = {}) {
     return;
   }
 
-  const source = JSON.stringify(currentDocument.text).replaceAll("<", "\\u003c");
+  const source = JSON.stringify(currentRuntimeSource).replaceAll("<", "\\u003c");
   const token = JSON.stringify(runToken);
   elements.runnerFrame.srcdoc = `<!doctype html>
 <meta http-equiv="Content-Security-Policy" content="${policy}">
@@ -915,7 +951,8 @@ async function runInParentScope () {
   stopRunner();
 
   try {
-    const result = window.eval(currentDocument.text);
+    await currentRender;
+    const result = window.eval(currentRuntimeSource);
     if (result && typeof result.then === "function") await result;
     showToast("JavaScript finished in parent scope");
   } catch (error) {

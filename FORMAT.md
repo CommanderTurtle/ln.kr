@@ -157,8 +157,14 @@ at most 128 residual runs, and may never read undecoded future output.
 The v1 record vocabulary supplies a local bit-price prefix over the source;
 this is not a second whole-document encoding. v2 always runs its zone, lexical,
 sector, delta, and remaining-line phases, then removes definitions that no
-emitted record references. The user selects v1 or v2 explicitly, and the
-default path never plans both formats. v2 data can form a lossless chain
+emitted record references. Retained lexical and template definitions are then
+repriced from their actual emitted uses, including their complete definition
+and count-header cost. Since removing one definition can expose or hide a later
+prior-output match, the monotonic cleanup fixed points are compared by their
+actual serialized v2 bit cost; a merely predicted local saving cannot force a
+larger v2 stream. This never invokes v1 as a competing whole-document encoder.
+The user selects v1 or v2 explicitly, and the default path never plans both
+formats. v2 data can form a lossless chain
 
 ```text
 B0 ──Δ1──> B1 ──Δ2──> B2 ──Δ3──> ... ──Δn──> Bn

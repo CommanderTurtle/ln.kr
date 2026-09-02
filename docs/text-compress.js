@@ -1312,7 +1312,7 @@ function collectLexemeCandidates (text, legacyCosts, zones) {
   return selectLexiconCandidates(candidates, legacyCosts);
 }
 
-function pruneLexicon (entries, tokens, legacyCosts) {
+function pruneLexicon (entries, tokens, legacyCosts, countReserve = 2) {
   if (!entries.length) return entries;
   const gains = new Float64Array(entries.length);
   const uses = new Uint32Array(entries.length);
@@ -1324,6 +1324,9 @@ function pruneLexicon (entries, tokens, legacyCosts) {
       tokenBits(token, STRUCTURED_VERSION).length;
   }
 
+  // The cleanup passes reserve two bits for the largest one-entry increase in
+  // the shared table count. The initial set uses zero so the exact whole-v2
+  // costing step can retain a borderline symbol when it helps later records.
   return entries.map((entry, index) => {
     const definitionTokens = tokenize(entry);
     const definitionBits = definitionTokens.reduce(
@@ -1331,7 +1334,7 @@ function pruneLexicon (entries, tokens, legacyCosts) {
       gammaBitLength(entry.length)
     );
     return { entry, gain: gains[index], uses: uses[index], definitionBits };
-  }).filter(candidate => candidate.gain > candidate.definitionBits)
+  }).filter(candidate => candidate.gain > candidate.definitionBits + countReserve)
     .sort((a, b) => b.uses - a.uses || b.gain - a.gain || b.entry.length - a.entry.length)
     .map(candidate => candidate.entry);
 }
@@ -1394,18 +1397,44 @@ function settleLexicon (initialLexicon, bytes, legacyCosts) {
   for (let pass = 0; pass < 3; pass ++) {
     const trie = lexicon.length ? buildDictionaryTrie(lexicon) : dictionaryTrie;
     const tokens = tokenize(bytes, false, null, trie);
-    const pruned = pruneLexicon(lexicon, tokens, legacyCosts);
+    const pruned = pruneLexicon(lexicon, tokens, legacyCosts, 0);
     if (sameEntries(pruned, lexicon)) break;
     lexicon = pruned;
   }
   return lexicon;
 }
 
-function usedTemplateEntries (templates, tokens) {
-  const used = new Set(tokens
-    .filter(token => token.type === "template")
-    .map(token => token.index));
-  return templates.filter((template, index) => used.has(index));
+function pruneTemplateEntries (templates, tokens, legacyCosts) {
+  if (!templates.length) return templates;
+  const gains = new Float64Array(templates.length);
+  const uses = new Uint32Array(templates.length);
+
+  for (const token of tokens) {
+    if (token.type !== "template") continue;
+    uses[token.index] ++;
+    gains[token.index] += legacyCosts[token.start + token.length] - legacyCosts[token.start] -
+      tokenBits(token, STRUCTURED_VERSION).length;
+  }
+
+  return templates.filter((template, index) =>
+    uses[index] > 0 && gains[index] > template.definitionBits + 2);
+}
+
+function structuredPlanBitLength (tokens, lexicon, templates) {
+  // Residual-shape reuse changes patch record lengths. Cost a disposable copy
+  // so choosing a grammar fixed point reflects the exact stream that would be
+  // serialized without mutating tokens still needed by later pruning passes.
+  const pricedTokens = tokens.map(token => token.type === "patch" ? { ...token } : token);
+  assignPatchGrammar(pricedTokens);
+  return buildLexiconHeaderBits(lexicon).length +
+    buildTemplateHeaderBits(templates).length +
+    pricedTokens.reduce(
+      // Raw records have the v2 structural discriminator (two bits longer
+      // than the legacy raw candidate price); every other candidate already
+      // carries its exact v2 bit length.
+      (total, token) => total + token.bitLength + (token.type === "raw" ? 2 : 0),
+      0
+    );
 }
 
 function buildStructuredTokens (text, bytes, legacyCosts, kind) {
@@ -1417,22 +1446,59 @@ function buildStructuredTokens (text, bytes, legacyCosts, kind) {
   );
   let templates = collectStructuralTemplates(text, bytes, zones, legacyCosts);
   let tokens = [];
+  let best = null;
+  let converged = false;
 
   // Every v2 phase runs in a fixed order. These passes only garbage-collect
   // definitions that no emitted record references; they never run or select
-  // the v1 encoder as a competing whole-document result.
-  for (let pass = 0; pass < 4; pass ++) {
+  // the v1 encoder as a competing whole-document result. Each monotonic
+  // grammar fixed point is priced as its exact v2 stream because removing a
+  // definition can expose or hide a later prior-output record.
+  for (let pass = 0; pass < 8; pass ++) {
     const trie = lexicon.length ? buildDictionaryTrie(lexicon) : dictionaryTrie;
     const templateCandidates = buildTemplateCandidateMap(templates, legacyCosts);
     tokens = tokenize(bytes, true, legacyCosts, trie, templateCandidates);
+    const bits = structuredPlanBitLength(tokens, lexicon, templates);
+    if (
+      !best || bits < best.bits ||
+      (bits === best.bits && lexicon.length + templates.length < best.definitionCount)
+    ) {
+      best = {
+        bits,
+        definitionCount: lexicon.length + templates.length,
+        tokens,
+        lexicon,
+        templates
+      };
+    }
     const nextLexicon = pruneLexicon(lexicon, tokens, legacyCosts);
-    const nextTemplates = usedTemplateEntries(templates, tokens);
-    if (sameEntries(nextLexicon, lexicon) && sameEntries(nextTemplates, templates)) break;
+    const nextTemplates = pruneTemplateEntries(templates, tokens, legacyCosts);
+    if (sameEntries(nextLexicon, lexicon) && sameEntries(nextTemplates, templates)) {
+      converged = true;
+      break;
+    }
     lexicon = nextLexicon;
     templates = nextTemplates;
   }
 
-  return { tokens, lexicon, templates, zones };
+  // A bounded cleanup remains valid even on an unusually adversarial grammar:
+  // price the final retained definitions once if the eighth pass still moved.
+  if (!converged) {
+    const trie = lexicon.length ? buildDictionaryTrie(lexicon) : dictionaryTrie;
+    tokens = tokenize(
+      bytes,
+      true,
+      legacyCosts,
+      trie,
+      buildTemplateCandidateMap(templates, legacyCosts)
+    );
+    const bits = structuredPlanBitLength(tokens, lexicon, templates);
+    if (!best || bits < best.bits) {
+      best = { tokens, lexicon, templates };
+    }
+  }
+
+  return { tokens: best.tokens, lexicon: best.lexicon, templates: best.templates, zones };
 }
 
 function tokenBits (token, version) {
