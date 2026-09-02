@@ -145,6 +145,58 @@ describe("ln.kr exact text codec", () => {
     }
   });
 
+  test("maps code sectors and remaining line families through exact templates", () => {
+    const css = Array.from({ length: 80 }, (_, index) => [
+      `.card-${index} {`,
+      `  color: hsl(${index} 70% 50%);`,
+      `  padding: ${8 + index % 4}px;`,
+      `  border: 1px solid var(--accent-${index});`,
+      "}"
+    ].join("\n")).join("\n\n");
+    const html = `<!doctype html><html><head><style>${css}</style></head><body>${Array.from(
+      { length: 80 },
+      (_, index) => `<article class="card card-${index}" data-index="${index}"><h2>Entry ${index}</h2><p>Stable descriptive body ${index}.</p></article>`
+    ).join("\n")}</body></html>`;
+    const javascript = Array.from(
+      { length: 100 },
+      (_, index) => `const handler_${index} = registry.create("channel-${index}", ${index * 7919});`
+    ).join("\n");
+
+    const htmlV1 = compressTextV1(html, outputAlphabetASCII, "html");
+    const htmlV2 = compressTextV2(html, outputAlphabetASCII, "html");
+    const jsV1 = compressTextV1(javascript, outputAlphabetASCII, "javascript");
+    const jsV2 = compressTextV2(javascript, outputAlphabetASCII, "javascript");
+
+    expect(htmlV2.stats.sectorTemplateUse).toBeGreaterThan(0);
+    expect(jsV2.stats.lineTemplateUse).toBeGreaterThan(0);
+    expect(htmlV2.payload.length).toBeLessThan(htmlV1.payload.length);
+    expect(jsV2.payload.length).toBeLessThan(jsV1.payload.length);
+    expect(decompressText(htmlV2.payload, outputAlphabetASCII).text).toBe(html);
+    expect(decompressText(jsV2.payload, outputAlphabetASCII).text).toBe(javascript);
+  });
+
+  test("compresses Markdown line families without normalizing authored bytes", () => {
+    const list = Array.from(
+      { length: 100 },
+      (_, index) => `- **Item ${index}** uses profile \`variant-${index}\` with threshold ${index % 7}.  `
+    ).join("\r\n");
+    const authoredHTML = Array.from(
+      { length: 40 },
+      (_, index) => `<details><summary>Item ${index}</summary><img src="./asset-${index}.webp"><p>Record ${index}</p></details>`
+    ).join("\r\n");
+    const source = `${list}\r\n\r\n${authoredHTML}`;
+    const legacy = compressTextV1(source, outputAlphabetASCII, "markdown");
+    const encoded = compressTextV2(source, outputAlphabetASCII, "markdown");
+    const authored = compressTextV2(`# Report\r\n\r\n${authoredHTML}`, outputAlphabetASCII, "markdown");
+
+    expect(encoded.stats.lineTemplateUse).toBeGreaterThan(0);
+    expect(authored.stats.sectorTemplateUse).toBeGreaterThan(0);
+    expect(encoded.payload.length).toBeLessThan(legacy.payload.length);
+    expect(decompressText(encoded.payload, outputAlphabetASCII).text).toBe(source);
+    expect(decompressText(authored.payload, outputAlphabetASCII).text)
+      .toBe(`# Report\r\n\r\n${authoredHTML}`);
+  });
+
   test("decodes chained structural generations through every transport alphabet", () => {
     const source = Array.from({ length: 80 }, (_, index) => [
       `section-${index} {`,

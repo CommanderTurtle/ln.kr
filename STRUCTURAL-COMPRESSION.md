@@ -8,17 +8,21 @@ No parser is allowed to normalize whitespace, rename a key, reorder a field, or
 guess that two values are semantically equivalent.
 
 The original v1 encoder remains frozen and is the default. Structural v2 is an
-explicit switch, so v1 never pays for candidate discovery and the user can
-compare the two formats directly. Both decoders validate the exact byte length,
-UTF-8, trailing sentinel, and CRC-32.
+explicit switch and a separate deterministic pipeline. Selecting v2 never runs
+v1 as a competing whole-document encoder and never falls back to it. v2 does
+reuse v1's fixed dictionary and record prices while constructing its own
+grammar. Both decoders validate the exact byte length, UTF-8, trailing sentinel,
+and CRC-32.
 
 ## Explored approaches
 
 ### Semantic or AST templates
 
-Parsing JSON, CSS, JavaScript, Markdown, or HTML could expose repeated shapes,
-but would specialize the codec and make exact preservation dependent on several
-language grammars. This was rejected.
+Making reconstruction depend on a JSON, CSS, JavaScript, Markdown, or HTML AST
+would specialize the codec and risk normalization. This was rejected. v2 does
+perform a read-only zone scan for braces, elements, Markdown fences, authored
+HTML, and sustained code-looking regions. Those zones nominate exact byte
+boundaries only; the decoder knows nothing about the source language.
 
 ### Approximate global curves
 
@@ -33,9 +37,9 @@ cryptography, not a redundancy model for arbitrary document bytes.
 The first structural prototype referenced an earlier block and carried changed
 runs, but compared its cost with `8 × blockLength`. This looked locally cheap
 while replacing already excellent v1 copy sequences. On a 249,219-byte nested
-JSON stress corpus it expanded the candidate stream from 19,617 to 58,372
-symbols. The whole-document fallback prevented that candidate from shipping,
-but the search was doing the wrong work.
+JSON stress corpus it expanded the experimental stream from 19,617 to 58,372
+symbols. That prototype was discarded; the current v2 prices a candidate
+against the fixed-record cost of the same byte interval.
 
 ### Multiscale anchors plus sparse residuals
 
@@ -65,12 +69,11 @@ parsing—no unit is altered, discarded, or assigned language-specific meaning.
 Repeated words and repeated sequences of 2–16 units become candidate local
 symbols. Candidate phrases are at most 192 UTF-8 bytes.
 
-For each candidate occurrence, the encoder measures the v1 bit cost of the
-same byte interval. It then builds both a word-only plan and a phrase-aware
-plan, prunes entries that do not repay their definition, orders retained
-symbols by actual use, and measures each complete v2 stream. The cheaper v2
-grammar wins. This avoids the earlier bookkeeping mistake where fewer records
-could still mean more payload bits.
+For each candidate occurrence, the encoder measures the fixed-record bit cost
+of the same byte interval. Words are admitted first so their low indices stay
+stable; non-overlapping phrase families follow. Definitions that receive no
+body references are garbage-collected during a bounded fixed-point pass. This
+is one v2 construction, not a v1/v2 trial or a set of whole-stream alternatives.
 
 Grammar definitions are not stored as an uncompressed string table. Their
 lengths are followed by a concatenated v1 stream, so definitions may use the
@@ -78,10 +81,40 @@ frozen dictionary and copy earlier definition ranges. A bounded lookahead also
 lets `space + grammar-symbol + space` beat one longer but more expensive exact
 copy; a byte-greedy parser would otherwise never reach the symbol.
 
-A document's word count is therefore useful evidence of possible grammar, but
-not a lower bound on URL symbols. Unique spellings, punctuation, whitespace,
-definition bytes, record tags, distances, length fields, integrity data, and
-the transport radix all remain part of a lossless self-contained URL.
+Every recurring word can therefore become a low-index local symbol. Words that
+occur only once remain exact variable material—storing a definition and one
+reference would merely move those bytes into the header. Punctuation,
+whitespace, record tags, integrity data, and transport radix remain exact too.
+The later sector and line phases prevent those one-off fields from forcing the
+surrounding repeated structure to be emitted again.
+
+### Zone, sector, and residual-line grammar
+
+The first v2 phase creates a disposable boundary map:
+
+- HTML is split into markup plus style, script, and JSON-script bodies;
+- Markdown exposes fenced languages and authored HTML/media blocks;
+- standalone or sustained CSS, JavaScript, and JSON-looking regions are
+  promoted only after multiple lines and a minimum span; and
+- every remaining exact line stays eligible for the final line-family pass.
+
+Within compatible zones, balanced brace sectors, balanced HTML elements,
+Markdown paragraphs, and individual lines are tokenized into an exact shape.
+Stable tokens become static template segments. Differing identifiers, numbers,
+quoted values, or other fields become ordered holes. Common byte prefixes and
+suffixes inside a differing token are retained in the static segment as well.
+
+For template `G = (S0, S1, ..., Sn)` and exact variable fields
+`V = (V0, V1, ..., Vn-1)`, reconstruction is
+
+```text
+expand(G, V) = S0 || V0 || S1 || ... || Vn-1 || Sn
+```
+
+One template definition is carried in the URL; each whole sector or remaining
+line is then a short template index plus its exact holes. Definitions are
+compressed as a concatenated v1 stream. No AST, normalized token, or inferred
+value is needed by the decoder.
 
 ### Reusable structural grammar
 
@@ -100,26 +133,29 @@ reliably than percentages alone.
 
 | Corpus | UTF-8 bytes | v1 symbols | v2 symbols | v2 change from v1 |
 |---|---:|---:|---:|---:|
-| Linked generation workflow JSON | 1,196,728 | 117,322 | 103,964 | 11.4% smaller |
-| Mixed model README | 62,457 | 41,157 | 39,450 | 4.1% smaller |
-| Supplied research-report HTML | 67,965 | 33,130 | 32,433 | 2.1% smaller |
-| Supplied image-viewer JavaScript | 2,692 | 1,404 | 1,337 | 4.8% smaller |
+| Linked generation workflow JSON | 1,196,728 | 117,322 | 103,834 | 11.5% smaller |
+| Mixed model README | 62,457 | 41,157 | 39,431 | 4.2% smaller |
+| Supplied research-report HTML | 67,965 | 33,130 | 32,432 | 2.1% smaller |
+| Supplied image-viewer JavaScript | 2,692 | 1,404 | 1,343 | 4.3% smaller |
 | Generated nested-object stress corpus | 249,219 | 19,617 | 15,392 | 21.5% smaller |
 | Generated repeated-rule stress corpus | 85,418 | 7,501 | 3,558 | 52.6% smaller |
+| Mixed HTML/CSS sector-template corpus | 16,196 | 3,643 | 1,896 | 48.0% smaller |
+| Markdown residual-line corpus | 5,779 | 1,508 | 811 | 46.2% smaller |
 
-The large workflow falls from 1,196,728 source bytes to 103,964 link symbols,
+The large workflow falls from 1,196,728 source bytes to 103,834 link symbols,
 or about 91.3% fewer symbols than source. Its v1 result was already unusually
-strong; v2 removes another 13,358 symbols without a schema-specific rule.
+strong; v2 removes another 13,488 symbols without a schema-specific decoder.
 
 The README and report results show the lexical layer doing work where aligned
-block deltas alone did little. On the supplied HTML, v2 retained 52 local
-grammar symbols and used them 376 times, removing 697 more transport symbols
-than v1. That is a measured 2.1% incremental improvement—not a claimed
-word-count-sized collapse.
+block deltas alone did little. On the supplied HTML, v2 retained 58 local
+grammar symbols used 412 times, two exact structural templates, and 23 sparse
+deltas. It removes 698 more transport symbols than v1. The mixed synthetic
+corpora separately prove that sector and residual-line records activate when
+the document actually contains those families.
 
-The supplied JavaScript is 50.3% shorter than its raw source after both layers.
-v2 combines six local symbols used 26 times with four sparse-delta regions and
-removes another 67 transport symbols.
+The supplied JavaScript is 50.1% shorter than its raw source after all phases.
+v2 combines seven local symbols used 26 times with four sparse-delta regions
+and removes another 61 transport symbols beyond v1.
 
 ## Verification
 
@@ -127,7 +163,8 @@ removes another 67 transport symbols.
 - v1 remains decodable and byte-for-byte stable for unambiguous transports;
 - v2 round trips through ASCII, QR, and emoji alphabets;
 - deterministic tests cover chained generations, recurring lexical phrases,
-  sparse edits, compressed definition streams, and reusable residual shapes;
+  HTML/CSS/JavaScript sectors, Markdown fences and authored HTML, exact line
+  families, compressed definition streams, and reusable residual shapes;
 - ignored research harnesses exercise 10,000 emoji transports and 1,200
   randomized structural streams;
 - magic, declared length, fatal UTF-8 decode, trailing sentinel, and CRC-32 all
