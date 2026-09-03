@@ -133,14 +133,21 @@ select { min-width: 9rem; border: 1px solid var(--line-strong); border-radius: 0
 .toggle input:checked + .toggle-track { border-color: var(--accent); background: rgba(168, 240, 180, 0.2); }
 .toggle input:checked + .toggle-track::after { transform: translateX(0.95rem); background: var(--accent); }
 .toggle input:focus-visible + .toggle-track { outline: 2px solid var(--accent); outline-offset: 3px; }
-.codec-control { display: grid; align-self: center; gap: 0.35rem; margin: 0; padding: 0; border: 0; }
+.codec-control { display: grid; align-self: center; gap: 0.35rem; margin: 0; padding: 0; border: 0; transition: opacity 150ms ease, filter 150ms ease; }
 .codec-control legend { padding: 0; color: var(--muted); font-size: 0.73rem; }
-.codec-switch { display: grid; grid-template-columns: repeat(4, 1fr); overflow: hidden; border: 1px solid var(--line-strong); border-radius: 0.65rem; background: var(--surface-2); }
-.codec-switch input { position: absolute; opacity: 0; pointer-events: none; }
-.codec-switch label { min-width: 3rem; padding: 0.58rem 0.7rem; color: var(--muted); text-align: center; font: 700 0.74rem ui-monospace, monospace; cursor: pointer; user-select: none; }
-.codec-switch label + input + label { border-left: 1px solid var(--line-strong); }
-.codec-switch input:checked + label { color: #0b140d; background: var(--accent); }
-.codec-switch input:focus-visible + label { outline: 2px solid var(--accent); outline-offset: -3px; }
+.codec-dial { position: relative; display: grid; grid-template-columns: repeat(3, 1fr); overflow: hidden; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface-2); }
+.codec-dial input { position: absolute; opacity: 0; pointer-events: none; }
+.codec-dial label { z-index: 1; min-width: 3rem; padding: 0.58rem 0.7rem; color: var(--muted); text-align: center; font: 700 0.74rem ui-monospace, monospace; cursor: pointer; user-select: none; transition: color 150ms ease; }
+.codec-dial input:checked + label { color: var(--accent-ink); }
+.codec-dial input:focus-visible + label { outline: 2px solid var(--accent); outline-offset: -3px; }
+.codec-dial-thumb { position: absolute; z-index: 0; inset: 0 auto 0 0; width: calc(100% / 3); border-radius: 999px; background: var(--accent); box-shadow: 0 0 1rem rgba(168, 240, 180, 0.18); pointer-events: none; transition: transform 170ms ease; }
+#codec-v2:checked ~ .codec-dial-thumb { transform: translateX(100%); }
+#codec-v3:checked ~ .codec-dial-thumb { transform: translateX(200%); }
+.codec-control:disabled { opacity: 0.42; filter: saturate(0); }
+.codec-control:disabled .codec-dial label { cursor: not-allowed; }
+.deflate-control { position: relative; display: flex; align-self: center; }
+.control-tooltip { position: absolute; z-index: 12; left: 50%; bottom: calc(100% + 0.7rem); width: min(19rem, calc(100vw - 2rem)); border: 1px solid var(--line-strong); border-radius: 0.65rem; padding: 0.62rem 0.72rem; color: var(--ink); background: #0c110d; box-shadow: var(--shadow); font-size: 0.75rem; line-height: 1.45; opacity: 0; pointer-events: none; transform: translate(-50%, 0.3rem); transition: opacity 130ms ease, transform 130ms ease; }
+.deflate-control:hover .control-tooltip, .deflate-control:focus-within .control-tooltip { opacity: 1; transform: translate(-50%, 0); }
 
 .result-card { margin-top: 1rem; padding: clamp(1.2rem, 3vw, 2rem); }
 .result-heading, .viewer-heading, .runner-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
