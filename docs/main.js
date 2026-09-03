@@ -66,7 +66,8 @@ const elements = {
   form: document.querySelector("#composer-form"),
   input: document.querySelector("#source-input"),
   format: document.querySelector("#source-format"),
-  codec: document.querySelector(".codec-switch"),
+  codec: document.querySelector("#codec-control"),
+  deflate: document.querySelector("#setting-deflate"),
   emoji: document.querySelector("#setting-emoji"),
   qr: document.querySelector("#setting-qr"),
   sourceCount: document.querySelector("#source-count"),
@@ -190,11 +191,15 @@ function outputLinkURL (payload, mode) {
 }
 
 function activeTextEncoder () {
+  if (elements.deflate.checked) return compressTextV4;
   const version = new FormData(elements.form).get("codec-version");
-  if (version === "v4") return compressTextV4;
   if (version === "v3") return compressTextV3;
   if (version === "v2") return compressTextV2;
   return compressTextV1;
+}
+
+function syncDeflateControl () {
+  elements.codec.disabled = elements.deflate.checked;
 }
 
 function resourceURLForTarget (target) {
@@ -1005,6 +1010,10 @@ elements.input.addEventListener("input", updateSourceCount);
 elements.codec.addEventListener("change", () => {
   if (!elements.result.hidden) generateLink();
 });
+elements.deflate.addEventListener("change", () => {
+  syncDeflateControl();
+  if (!elements.result.hidden) generateLink();
+});
 elements.emoji.addEventListener("change", () => {
   if (!elements.result.hidden) generateLink();
 });
@@ -1175,6 +1184,8 @@ window.addEventListener("hashchange", () => {
   if (window.location.hash) decodeLocation();
   else showComposerMode("text");
 });
+
+syncDeflateControl();
 
 if (!decodeLocation()) {
   elements.format.value = "auto";

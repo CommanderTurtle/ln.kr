@@ -46,19 +46,26 @@
               <option value="text">Plain text</option>
             </select>
           </label>
-          <fieldset class="codec-control">
+          <fieldset id="codec-control" class="codec-control">
             <legend>Encoder</legend>
-            <div class="codec-switch">
+            <div class="codec-dial">
               <input type="radio" name="codec-version" id="codec-v1" value="v1" autocomplete="off" checked>
               <label for="codec-v1">v1</label>
               <input type="radio" name="codec-version" id="codec-v2" value="v2" autocomplete="off">
               <label for="codec-v2">v2</label>
               <input type="radio" name="codec-version" id="codec-v3" value="v3" autocomplete="off">
               <label for="codec-v3">v3</label>
-              <input type="radio" name="codec-version" id="codec-v4" value="v4" autocomplete="off">
-              <label for="codec-v4" title="Sometimes, opting for traditional DEFLATE works when token entropy is too high.">v4</label>
+              <span class="codec-dial-thumb" aria-hidden="true"></span>
             </div>
           </fieldset>
+          <div class="deflate-control">
+            <label class="toggle">
+              <input type="checkbox" id="setting-deflate" autocomplete="off" aria-describedby="deflate-tooltip">
+              <span class="toggle-track" aria-hidden="true"></span>
+              <span>DEFLATE v4</span>
+            </label>
+            <span id="deflate-tooltip" class="control-tooltip" role="tooltip">Sometimes traditional DEFLATE works better when token entropy is too high.</span>
+          </div>
           <label class="toggle">
             <input type="checkbox" id="setting-emoji" autocomplete="off">
             <span class="toggle-track" aria-hidden="true"></span>
