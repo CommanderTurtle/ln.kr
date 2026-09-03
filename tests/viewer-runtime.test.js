@@ -28,9 +28,11 @@ test("all rich renderer assets and their license copies are vendored", async () 
     "highlight.min.js",
     "github-dark.min.css",
     "mermaid.min.js",
+    "pako.esm.min.js",
     "licenses/marked-LICENSE",
     "licenses/highlightjs-LICENSE",
-    "licenses/mermaid-LICENSE"
+    "licenses/mermaid-LICENSE",
+    "licenses/pako-LICENSE"
   ]) {
     expect(await Bun.file(new URL(path, root)).exists()).toBe(true);
   }

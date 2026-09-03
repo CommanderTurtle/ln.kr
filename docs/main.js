@@ -16,7 +16,7 @@ import {
   splitLinkFragment
 } from "./link-runtime.js";
 import { decodeDocumentPayload } from "./payload.js";
-import { compressTextV1, compressTextV2, compressTextV3, detectKind } from "./text-compress.js";
+import { compressTextV1, compressTextV2, compressTextV3, compressTextV4, detectKind } from "./text-compress.js";
 import { renderContent } from "./render.js";
 import {
   applySourceLineSlice,
@@ -66,6 +66,7 @@ const elements = {
   form: document.querySelector("#composer-form"),
   input: document.querySelector("#source-input"),
   format: document.querySelector("#source-format"),
+  codec: document.querySelector(".codec-switch"),
   emoji: document.querySelector("#setting-emoji"),
   qr: document.querySelector("#setting-qr"),
   sourceCount: document.querySelector("#source-count"),
@@ -190,6 +191,7 @@ function outputLinkURL (payload, mode) {
 
 function activeTextEncoder () {
   const version = new FormData(elements.form).get("codec-version");
+  if (version === "v4") return compressTextV4;
   if (version === "v3") return compressTextV3;
   if (version === "v2") return compressTextV2;
   return compressTextV1;
@@ -355,10 +357,16 @@ async function generateLink () {
     elements.outputLink.value = currentLink;
     const recordSummary = [
       `${symbols.toLocaleString()} payload symbols`,
-      `format v${encoded.stats.version}`,
-      `${encoded.stats.dictionary} dictionary records`,
-      `${encoded.stats.copy} repetition records`
+      `format v${encoded.stats.version}`
     ];
+    if (encoded.stats.version === 4) {
+      recordSummary.push(`${encoded.stats.compressedBytes.toLocaleString()} DEFLATE bytes`);
+    } else {
+      recordSummary.push(
+        `${encoded.stats.dictionary} dictionary records`,
+        `${encoded.stats.copy} repetition records`
+      );
+    }
     if (encoded.stats.lexicon) {
       recordSummary.push(
         encoded.stats.version === 3
@@ -994,7 +1002,7 @@ elements.linkModeToggle.addEventListener("click", () => {
   showComposerMode(linkMode ? "link" : "text");
 });
 elements.input.addEventListener("input", updateSourceCount);
-elements.structural.addEventListener("change", () => {
+elements.codec.addEventListener("change", () => {
   if (!elements.result.hidden) generateLink();
 });
 elements.emoji.addEventListener("change", () => {

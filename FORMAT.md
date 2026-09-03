@@ -16,11 +16,11 @@ Fields are consumed least-significant bit first:
 | Field | Encoding |
 |---|---|
 | Magic | 16-bit `0x4c4e` |
-| Version | 3-bit integer (`1`, `2`, or `3`) |
+| Version | 3-bit integer (`1`, `2`, `3`, or `4`) |
 | Display kind | 2-bit integer: text, Markdown, JavaScript, HTML |
 | Byte length | Elias-gamma of `length + 1` |
 | Integrity | CRC-32 of the exact UTF-8 bytes |
-| Body | Records until the declared byte length is reached |
+| Body | v1-v3 records, or a v4 compressed-length field and DEFLATE bytes |
 | Terminator | ha.mr positive-integer sentinel (`1`) |
 
 Decoding fails closed on a bad magic/version, invalid record, bad distance,
@@ -163,7 +163,7 @@ and count-header cost. Since removing one definition can expose or hide a later
 prior-output match, the monotonic cleanup fixed points are compared by their
 actual serialized v2 bit cost; a merely predicted local saving cannot force a
 larger v2 stream. This never invokes v1 as a competing whole-document encoder.
-The user selects v1, v2, or v3 explicitly, and no path plans multiple complete
+The user selects v1, v2, v3, or v4 explicitly, and no path plans multiple complete
 formats. v2 data can form a lossless chain
 
 ```text
@@ -212,6 +212,26 @@ The 13-bit limit bounds a dictionary identifier independently of the selected
 transport alphabet. URL characters are a packed representation of the entire
 bitstream, so record boundaries do not generally align with individual ASCII
 or emoji symbols.
+
+## v4 traditional DEFLATE
+
+v4 is a separate explicit codec for inputs whose document-local vocabulary is
+expensive to describe. It does not invoke v1, v2, or v3 and does not compare
+whole-document candidates. The encoder applies pako level 9 to the exact UTF-8
+bytes using the zlib-wrapped DEFLATE format.
+
+After the common magic, version, kind, original byte length, and CRC-32 fields,
+the v4 body is:
+
+1. Elias-gamma of `compressed byte length + 1`;
+2. that many exact compressed bytes, each stored least-significant bit first;
+3. the ordinary positive-integer sentinel (`1`).
+
+The decoder consumes exactly the declared compressed bytes, requires the
+sentinel with no trailing data, inflates the zlib stream, and then verifies the
+original byte length, CRC-32, and fatal UTF-8 decode. The complete versioned
+integer is converted through the same ASCII, QR, or emoji alphabet machinery
+as every earlier version.
 
 ## Emoji boundary framing
 

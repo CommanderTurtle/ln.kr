@@ -5,8 +5,9 @@ Lossless text and code carried entirely in a link.
 ln.kr is a static, browser-only descendant of
 [p2r3/ha.mr](https://github.com/p2r3/ha.mr). ha.mr’s positive-BigInt
 bitstream and ASCII, QR, and emoji alphabets remain the foundation. ln.kr adds
-a versioned text grammar above that engine; it does not replace it with Brotli,
-DEFLATE, Base64URL, a server-side paste ID, or a generic compression package.
+versioned text codecs above that engine. v1-v3 are its native text grammars;
+v4 is an explicit traditional-DEFLATE alternative. None uses a server-side
+paste ID or replaces ha.mr's final alphabet transport with Base64URL.
 
 Open the site, paste source, and share the resulting fragment URL. The source
 is decoded by the recipient’s browser. There is no paste database or resolver
@@ -23,8 +24,8 @@ service; Link mode also remains entirely fragment-routed in the browser.
 
 The frozen v1 grammar combines a ranked code/Markdown dictionary with
 prior-output references. It is the default and does no structural discovery.
-The visible three-way encoder switch keeps that frozen v1 path, exposes
-**Structural v2**, and adds **Dictionary v3**. v2 runs one deterministic
+The visible four-way encoder switch keeps that frozen v1 path, exposes
+**Structural v2** and **Dictionary v3**, and adds **DEFLATE v4**. v2 runs one deterministic
 four-phase pipeline:
 
 1. map HTML body/style/script regions, Markdown and its fenced languages or
@@ -45,7 +46,7 @@ never rewrites, normalizes, or semantically evaluates the source.
 The choice is explicit: each selection runs only its own complete pipeline.
 There is no whole-document trial, fallback, or automatic winner selection.
 The fixed v1 record costs are reused as the local price scale for references,
-and unreferenced definitions are discarded deterministically. All three formats
+and unreferenced definitions are discarded deterministically. All four formats
 decode on the same page. The byte count, UTF-8 validation, trailing-data check,
 and CRC-32 must all agree before a document is rendered.
 
@@ -68,7 +69,47 @@ one-use words are not added merely to make the entry count larger.
 
 v3 is a separate wire version and never changes a v1 or v2 link. Like v2, it
 does not run another whole-document encoder and silently choose the smaller
-result. All three versions decode on the same static page.
+result. All four versions decode on the same static page.
+
+### When v4 wins: token entropy versus byte recurrence
+
+v3's document dictionary is self-describing. Every retained word, identifier,
+phrase, and template must be written into the URL before a reference can save
+anything. With `U` similarly frequent entries, an identifier needs roughly
+
+```text
+ceil(log2(U)) bits
+```
+
+before framing. At 4,000 unique entries that floor is 12 bits; near v3's 7,225
+entry cap it is 13 bits. A v3 lexeme also carries its four-bit `1110` record
+prefix, so those references occupy 16–17 body bits before transport packing.
+Canonical Huffman codes shorten hot entries, but a large, flat long tail still
+approaches the lexical entropy
+
+```text
+H(T) = -sum(p_i * log2(p_i))
+```
+
+and the payload must additionally carry exact dictionary bytes, lengths, code
+lengths, and structural definitions. A word such as `dependencies` repeated
+30 times can repay its own entry while the document as a whole still loses the
+dictionary-vs-literal contest once thousands of other tokens are nearly unique.
+
+v4 takes the other side of that trade. It applies pako's level-9, zlib-wrapped
+DEFLATE directly to the exact UTF-8 bytes. DEFLATE's LZ77 window references
+nearby repeated byte strings and its dynamic Huffman stage codes the remaining
+literal/length/distance alphabet. It therefore does not need to publish one
+independent entry for every word, and can exploit recurring markup, spacing,
+punctuation, and substrings even when the vocabulary is large. The compressed
+bytes then enter the same ln.kr magic/version/kind/length/CRC framing and the
+same ha.mr ASCII, QR, or emoji transport.
+
+Neither model dominates every input. v1 is exceptionally cheap for exact
+copies, v2/v3 can win on reusable structural families, and v4 often wins on
+long documents with high token entropy but strong local byte recurrence. The
+choice stays explicit: selecting v4 runs DEFLATE once; ln.kr never runs all
+encoders and hides a winner-selection pass.
 
 See [FORMAT.md](FORMAT.md) for the wire format and
 [STRUCTURAL-COMPRESSION.md](STRUCTURAL-COMPRESSION.md) for the design attempts,
@@ -78,7 +119,7 @@ cost model, and corpus measurements.
 
 The generated page provides:
 
-- an explicit **v1 / v2 / v3** encoder switch, with stable v1 as the default;
+- an explicit **v1 / v2 / v3 / v4** encoder switch, with stable v1 as the default;
 - a GFM preview with authored HTML blocks, Mermaid diagrams,
   syntax highlighting, per-block copy actions, and an exact-source view;
 - **Copy raw** and **Copy rich**;
@@ -188,6 +229,7 @@ both environments.
 node standalone.js encode "const answer = 42;" ascii javascript
 node standalone.js encode "const answer = 42;" ascii javascript v2
 node standalone.js encode "const answer = 42;" ascii javascript v3
+node standalone.js encode "const answer = 42;" ascii javascript v4
 node standalone.js decode "https://a.shel.sh/#..."
 
 # Preserve a file exactly through stdin
@@ -226,6 +268,7 @@ The suite covers:
 - ambiguity-safe emoji boundaries;
 - randomized and multigeneration structural-v2 round trips;
 - bounded, frequency-shaped v3 dictionaries through every transport alphabet;
+- explicit v4 DEFLATE round trips through every content kind and transport alphabet;
 - payload corruption rejection;
 - viewer URL-mode contracts;
 - fragment-only guarded, direct, source, live-source, sliced-module, and image routes;
@@ -241,5 +284,5 @@ The invisible export follows the technique documented at
 <https://aem1k.com/invisible/encoder/>.
 
 The browser-only rich viewer additionally vendors pinned copies of Marked,
-highlight.js, and Mermaid. Their exact versions, upstream links, and license
-files are listed in `docs/vendor/README.md`.
+highlight.js, Mermaid, and pako. Their exact versions, upstream links, and
+license files are listed in `docs/vendor/README.md`.
