@@ -151,7 +151,10 @@
           <button id="copy-resolved-link" type="button">Copy direct</button>
           <button id="copy-source-link" type="button">Copy source</button>
           <button id="copy-live-source-link" type="button">Copy live</button>
+          <button id="copy-framed-link" type="button">Copy in-frame</button>
           <button id="copy-image-link" type="button" hidden>Copy image</button>
+          <button id="copy-media-link" type="button" hidden>Copy media</button>
+          <button id="copy-pdf-link" type="button" hidden>Copy PDF</button>
         </div>
         <p id="link-query-warning" class="warning" hidden>Links with several query parameters can compress less efficiently.</p>
         <figure id="link-qr-wrap" class="qr-wrap" hidden>
@@ -178,8 +181,11 @@
           <span id="link-resolved-target" class="resolved-target"></span>
         </div>
         <div class="result-actions">
-          <button id="link-resolved-copy" type="button">Copy direct</button>
+          <button id="link-resolved-copy" type="button">Copy source</button>
+          <button id="link-resolved-download" type="button">Download</button>
+          <button id="link-resolved-expand" type="button" aria-expanded="false">Expand frame</button>
           <a id="link-resolved-open" class="button" target="_blank" rel="noopener noreferrer">Open directly ↗</a>
+          <button id="link-resolved-close" class="runner-close" type="button" aria-label="Close expanded frame" hidden>×</button>
         </div>
       </div>
       <iframe id="link-resolved-frame" title="Resolved link source"></iframe>

@@ -1,14 +1,24 @@
 import {
   decodeLinkTarget,
+  encodeLinkTarget,
   isTextualSourceResponse,
+  mediaLinkKind,
   splitLinkFragment
 } from "./link-runtime.js";
 
-const sourceModes = new Set([
+const slicedSourceModes = new Set([
   "source",
   "source-markdown",
   "source-javascript",
-  "source-html"
+  "source-html",
+  "source-live"
+]);
+
+const moduleModes = new Set([
+  ...slicedSourceModes,
+  "image",
+  "media",
+  "pdf"
 ]);
 
 const defaultLimits = Object.freeze({
@@ -18,6 +28,7 @@ const defaultLimits = Object.freeze({
 });
 
 const sourceLineSlicePattern = /^(.*)::~(-?\d+)(?::(-?\d+))?$/s;
+const webURLCandidatePattern = /https?:\/\/[^\s"<>\u0060]+/gi;
 
 function safeLineOffset (value) {
   const offset = Number(value);
@@ -63,11 +74,13 @@ function sourceLinkFromLine (line, appURL) {
   }
 
   const linkage = splitLinkFragment(url.hash.slice(1));
-  if (!sourceModes.has(linkage.mode)) return null;
+  if (!moduleModes.has(linkage.mode)) return null;
   let lineSlice;
   let target;
   try {
-    const sliced = splitSourceLineSlice(linkage.payload);
+    const sliced = slicedSourceModes.has(linkage.mode)
+      ? splitSourceLineSlice(linkage.payload)
+      : { payload: linkage.payload, lineSlice: null };
     lineSlice = sliced.lineSlice;
     ({ target } = decodeLinkTarget(sliced.payload));
   } catch {
@@ -76,10 +89,75 @@ function sourceLinkFromLine (line, appURL) {
   return {
     indent: match[1],
     ending: match[3] || "",
+    href: match[2],
     key: target,
     lineSlice,
+    mode: linkage.mode,
     target
   };
+}
+
+function decodedResolvedCandidate (raw, app) {
+  const marker = raw.indexOf("#lr:");
+  if (marker < 0) return null;
+
+  for (let end = raw.length; end > marker + 4; end --) {
+    const candidate = raw.slice(0, end);
+    const decodedCandidate = candidate
+      .replaceAll("&amp;", "&")
+      .replaceAll("&#38;", "&")
+      .replaceAll("&#x26;", "&")
+      .replaceAll("&#X26;", "&");
+    let url;
+    try {
+      url = new URL(decodedCandidate);
+    } catch {
+      continue;
+    }
+    if (url.origin !== app.origin && url.hostname.toLowerCase() !== "a.shel.sh") {
+      return null;
+    }
+    const linkage = splitLinkFragment(url.hash.slice(1));
+    if (linkage.mode !== "resolved") return null;
+    try {
+      const decoded = decodeLinkTarget(linkage.payload);
+      const canonical = encodeLinkTarget(decoded.target, decoded.alphabet);
+      if (canonical.payload !== decoded.payload) continue;
+      const { target } = decoded;
+      return { htmlEscaped: decodedCandidate !== candidate, target, end };
+    } catch {
+      // The URL may include closing Markdown/CSS punctuation. Retry without it.
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve #lr references only in the private runtime copy. The exact authored
+ * source continues to contain its short a.shel.sh URL.
+ */
+export function expandResolvedResourceLinks (source, { appURL }) {
+  if (!appURL) throw new Error("Resolved resource expansion requires an app URL");
+  const app = new URL(appURL);
+  const text = String(source);
+  return text.replace(webURLCandidatePattern, (raw, offset) => {
+    let candidate = raw;
+    let syntax = "";
+    if (text[offset - 1] === "(") {
+      const closing = raw.lastIndexOf(")");
+      if (closing > raw.indexOf("#lr:")) {
+        candidate = raw.slice(0, closing);
+        syntax = raw.slice(closing);
+      }
+    }
+
+    const resolved = decodedResolvedCandidate(candidate, app);
+    if (!resolved) return raw;
+    const target = resolved.htmlEscaped
+      ? resolved.target.replaceAll("&", "&amp;")
+      : resolved.target;
+    return `${target}${candidate.slice(resolved.end)}${syntax}`;
+  });
 }
 
 function linesWithEndings (source) {
@@ -113,6 +191,82 @@ function indentSource (source, indent) {
   return String(source).replace(/(^|\r\n|\n|\r)(?=.)/g, `$1${indent}`);
 }
 
+function escapeHTML (value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function includeMediaKind (include, contentType = "", sourceURL = include.target) {
+  if (include.mode === "image") return "image";
+  if (include.mode === "pdf") return "pdf";
+  return mediaLinkKind(sourceURL, contentType) || mediaLinkKind(include.target, contentType);
+}
+
+function modulePeek (include, source, language = "html") {
+  return `<aside class="lnkr-module-source" tabindex="0">
+<code class="lnkr-module-token">${escapeHTML(include.href)}</code>
+<pre><code class="language-${escapeHTML(language)}">${escapeHTML(source)}</code></pre>
+</aside>`;
+}
+
+function pdfModuleLoader () {
+  return `<script>(function(module){
+var host=module&&module.querySelector('[data-lnkr-pdf-host]');
+if(!host||module.dataset.lnkrReady)return;
+module.dataset.lnkrReady='loading';
+fetch(module.dataset.lnkrPdfSource).then(function(response){
+if(!response.ok)throw new Error(response.status+' '+response.statusText);
+return response.arrayBuffer();
+}).then(function(bytes){
+var url=URL.createObjectURL(new Blob([bytes],{type:'application/pdf'}));
+var frame=document.createElement('iframe');
+frame.src=url;frame.title='PDF preview';frame.style='width:100%;height:42rem;border:0;background:white';
+host.replaceChildren(frame);module.dataset.lnkrReady='true';
+addEventListener('pagehide',function(){URL.revokeObjectURL(url)},{once:true});
+}).catch(function(error){host.textContent='PDF could not be loaded: '+(error.message||error);module.dataset.lnkrReady='error';});
+})(document.currentScript.previousElementSibling);<\/script>`;
+}
+
+function mediaModuleMarkup (include, kind, resourceLinkForTarget) {
+  if (typeof resourceLinkForTarget !== "function") {
+    throw new Error("Media source inclusion requires a route-two resource builder");
+  }
+  const resource = resourceLinkForTarget(include.target);
+  const encodedLabel = new URL(include.target).pathname.split("/").filter(Boolean).at(-1) || kind;
+  let label = encodedLabel;
+  try {
+    label = decodeURIComponent(encodedLabel);
+  } catch {
+    // A malformed percent escape is still a legal URL path; keep it verbatim.
+  }
+  let element;
+  if (kind === "image") {
+    element = `<img src="${escapeHTML(resource)}" alt="${escapeHTML(label)}" loading="eager" decoding="async" referrerpolicy="no-referrer">`;
+  } else if (kind === "video") {
+    element = `<video src="${escapeHTML(resource)}" controls preload="metadata"></video>`;
+  } else if (kind === "audio") {
+    element = `<audio src="${escapeHTML(resource)}" controls preload="metadata"></audio>`;
+  } else {
+    element = `<iframe src="${escapeHTML(resource)}" title="${escapeHTML(label)}"></iframe>`;
+  }
+
+  if (kind === "pdf") {
+    return `<figure class="lnkr-module lnkr-module-pdf" data-lnkr-pdf-source="${escapeHTML(resource)}">
+<div class="lnkr-pdf-host" data-lnkr-pdf-host>Loading PDF...</div>
+${modulePeek(include, element)}
+</figure>
+${pdfModuleLoader()}`;
+  }
+
+  return `<figure class="lnkr-module lnkr-module-${kind}">
+${element}
+${modulePeek(include, element)}
+</figure>`;
+}
+
 /**
  * Resolve bare #s/#sm/#sj/#sh link lines before the existing renderer or
  * runner sees them. The authored document is not changed; callers keep this
@@ -120,7 +274,10 @@ function indentSource (source, indent) {
  */
 export async function expandSourceIncludes (source, {
   appURL,
+  documentKind = "text",
+  resourceLinkForTarget,
   resourceURLForTarget,
+  showModuleSource = false,
   fetchImpl = globalThis.fetch,
   limits = defaultLimits
 }) {
@@ -148,6 +305,10 @@ export async function expandSourceIncludes (source, {
 
       const sourceURL = response.headers.get("x-lnkr-source-url") || response.url || target;
       const contentType = response.headers.get("content-type") || "";
+      const mediaKind = mediaLinkKind(sourceURL, contentType);
+      if (mediaKind) {
+        return { contentType, mediaKind, sourceURL, text: "" };
+      }
       if (!isTextualSourceResponse(sourceURL, contentType)) {
         throw new Error(`Source include is not text: ${sourceURL}`);
       }
@@ -157,7 +318,7 @@ export async function expandSourceIncludes (source, {
       if (state.bytes > limits.bytes) {
         throw new Error(`Source includes exceed the ${limits.bytes.toLocaleString()}-byte limit`);
       }
-      return text;
+      return { contentType, mediaKind: "", sourceURL, text };
     })();
 
     state.raw.set(target, pending);
@@ -187,11 +348,39 @@ export async function expandSourceIncludes (source, {
 
       const nestedAncestors = new Set(ancestors);
       nestedAncestors.add(include.key);
+      const declaredMedia = includeMediaKind(include);
+      if (declaredMedia) {
+        if (!["markdown", "html"].includes(documentKind)) {
+          throw new Error(`A ${declaredMedia} module requires a Markdown or HTML document`);
+        }
+        let replacement = mediaModuleMarkup(include, declaredMedia, resourceLinkForTarget);
+        replacement = indentSource(replacement, include.indent);
+        if (include.ending && !/(?:\r\n|\n|\r)$/.test(replacement)) replacement += include.ending;
+        output.push(replacement);
+        continue;
+      }
+
+      const record = await fetchSource(include.target);
+      const fetchedMedia = includeMediaKind(include, record.contentType, record.sourceURL);
+      if (fetchedMedia) {
+        if (!["markdown", "html"].includes(documentKind)) {
+          throw new Error(`A ${fetchedMedia} module requires a Markdown or HTML document`);
+        }
+        let replacement = mediaModuleMarkup(include, fetchedMedia, resourceLinkForTarget);
+        replacement = indentSource(replacement, include.indent);
+        if (include.ending && !/(?:\r\n|\n|\r)$/.test(replacement)) replacement += include.ending;
+        output.push(replacement);
+        continue;
+      }
       const imported = applySourceLineSlice(
-        await fetchSource(include.target),
+        record.text,
         include.lineSlice
       );
       let replacement = await expand(imported, depth + 1, nestedAncestors);
+      if (showModuleSource && documentKind === "markdown") {
+        const spacer = replacement && !/(?:\r\n|\n|\r)$/.test(replacement) ? "\n" : "";
+        replacement += `${spacer}${modulePeek(include, imported, "text")}\n`;
+      }
       replacement = indentSource(replacement, include.indent);
       if (include.ending && !/(?:\r\n|\n|\r)$/.test(replacement)) {
         replacement += include.ending;
