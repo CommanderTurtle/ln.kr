@@ -1,6 +1,5 @@
 import { join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { handleResolverRequest } from "../worker/proxy.js";
 
 const root = normalize(fileURLToPath(new URL("../docs/", import.meta.url)));
 const rootPrefix = root.endsWith(sep) ? root : root + sep;
@@ -12,9 +11,6 @@ const server = Bun.serve({
   port,
   async fetch (request) {
     const url = new URL(request.url);
-    if (url.pathname.startsWith("/lr/")) {
-      return handleResolverRequest(request);
-    }
     let pathname;
     try {
       pathname = decodeURIComponent(url.pathname);

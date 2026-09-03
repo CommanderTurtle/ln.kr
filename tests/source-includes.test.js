@@ -20,10 +20,10 @@ function sourceHarness (sources, overrides = {}) {
     get fetches () { return fetches; },
     options: {
       appURL,
-      resolverURLForTarget: target => `https://resolver.test/source?target=${encodeURIComponent(target)}`,
+      resourceURLForTarget: target => target,
       fetchImpl: async url => {
         fetches ++;
-        const target = new URL(url).searchParams.get("target");
+        const target = String(url);
         const record = sources.get(target);
         if (!record) return new Response("missing", { status: 404, statusText: "Not Found" });
         return new Response(record.body, {
@@ -159,7 +159,7 @@ describe("source includes", () => {
     expect(harness.fetches).toBe(1);
   });
 
-  test("keeps direct resolver links literal and rejects binary source modules", async () => {
+  test("keeps #lr links literal and rejects binary source modules", async () => {
     const binary = "https://raw.example.test/manual.pdf";
     const direct = sourceLink("https://images.example.test/image.webp", "lr:");
     const harness = sourceHarness(new Map([

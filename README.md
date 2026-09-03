@@ -9,8 +9,8 @@ a versioned text grammar above that engine; it does not replace it with Brotli,
 DEFLATE, Base64URL, a server-side paste ID, or a generic compression package.
 
 Open the site, paste source, and share the resulting fragment URL. The source
-is decoded by the recipient’s browser. There is no paste database. Link mode
-can additionally ask the optional stateless resolver to fetch a public URL.
+is decoded by the recipient’s browser. There is no paste database or resolver
+service; Link mode also remains entirely fragment-routed in the browser.
 
 ## What it preserves
 
@@ -108,14 +108,16 @@ The **Link** control restores ha.mr’s original URL-specialized codec without
 changing that engine. It produces five deliberately different transports:
 
 - **Copy link** uses `#l:` and shows the destination before navigation.
-- **Copy direct** uses `/lr/PAYLOAD` on `lr.a.shel.sh`; that endpoint streams
-  the public target’s bytes, status, range response, and media type. It can be
-  used directly as an image, media, or fetch source.
+- **Copy direct** uses `#lr:` and loads the decoded destination immediately in
+  the resolved viewer. It remains a client-side fragment route and never
+  invents a path or hostname.
 - **Copy source** uses `#s:`. On opening, the browser reads the target through
-  the resolver, detects HTML, Markdown, JavaScript, or ordinary text from its
-  response type, final suffix, and contents, then replaces the short route with
-  the corresponding ordinary editable `#PAYLOAD` document URL. Only HTML gets
-  the upstream `<base>` anchor; a raw README or script stays raw.
+  the decoded public URL, detects HTML, Markdown, JavaScript, or ordinary text
+  from its response type, final suffix, and contents, then replaces the short
+  route with the corresponding ordinary editable `#PAYLOAD` document URL.
+  Only HTML gets the upstream `<base>` anchor; a raw README or script stays
+  raw. The adjacent **Source as** selector defaults to that automatic detection
+  and can instead emit the explicit Markdown, JavaScript, or HTML route.
 - Explicit `#sm:`, `#sj:`, and `#sh:` source aliases force Markdown,
   JavaScript, or HTML when a server supplies ambiguous metadata.
 - A bare `#s:`/`#sm:`/`#sj:`/`#sh:` link on its own source line is a runtime
@@ -143,14 +145,10 @@ changing that engine. It produces five deliberately different transports:
   that exact source in the normal viewer, and runs it in parent scope.
 
 `#lr:` remains the inspectable framed wrapper for a compressed destination.
-The byte endpoint uses a separate path-safe alphabet over the same ha.mr
-positive-BigInt stream. The isolated `lr.a.shel.sh` origin is intentional:
-arbitrary resolved content never shares the `a.shel.sh` application origin.
-The resolver stores nothing, sends no target credentials or cookies, follows
-only revalidated public HTTP(S) redirects, and rejects private/local targets.
-Use this direct form inside authored `src`/`href` attributes or a custom media
-viewer; runtime source inclusion is intentionally reserved for textual
-Markdown, JavaScript, CSS, HTML, and similar source files.
+It decodes entirely in the browser. Image aliases load the decoded image URL
+directly and source routes fetch CORS-readable public text directly; runtime
+inclusion remains reserved for textual Markdown, JavaScript, CSS, HTML, and
+similar source files.
 
 ## Run locally
 
@@ -165,7 +163,8 @@ bun test
 ```
 
 The development server reproduces GitHub Pages’ `404.html` behavior for QR
-routes and serves the same `/lr/` resolver handler used by the edge Worker.
+routes. All link and source behavior remains fragment-routed client-side in
+both environments.
 
 ## CLI
 
@@ -191,17 +190,9 @@ custom domain in `docs/CNAME`:
 a.shel.sh
 ```
 
-GitHub Pages cannot execute the `/lr/` byte resolver. `wrangler.jsonc` deploys
-the stateless module Worker to the isolated `lr.a.shel.sh` custom domain:
-
-```bash
-bun x wrangler dev
-bun x wrangler deploy
-```
-
-No Worker deployment is needed for ordinary self-contained document links.
-It is needed for **Copy direct**, **Copy source**, **Copy live**, `#lr:`, and
-the source used by `#i:` image aliases.
+The deployment is entirely static. `#l:`, `#lr:`, `#s:`, `#sm:`, `#sj:`,
+`#sh:`, `#hs:`, and `#i:` are URL-fragment routes handled by the browser; no
+matching server directories or rewrite rules exist.
 
 The Docker image serves the same directory with Nginx and sends unknown QR
 paths through `404.html`.
@@ -221,7 +212,7 @@ The suite covers:
 - randomized and multigeneration structural-v2 round trips;
 - payload corruption rejection;
 - viewer URL-mode contracts;
-- exact resolver byte/MIME/range passthrough and private-target rejection;
+- fragment-only guarded, direct, source, live-source, sliced-module, and image routes;
 - vendored renderer assets and license copies;
 - vendored JSFuck alphabet and execution.
 

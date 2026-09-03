@@ -7,11 +7,11 @@ import { countAlphabetSymbols } from "./compress.js";
 import {
   anchorResolvedHTML,
   decodeLinkTarget,
-  encodeDirectLinkTarget,
   encodeLinkTarget,
   isTextualSourceResponse,
   isImageLinkTarget,
   linkPrefixForMode,
+  resolvedResourceURL,
   sourceKindHint,
   splitLinkFragment
 } from "./link-runtime.js";
@@ -36,6 +36,7 @@ const elements = {
   linkForm: document.querySelector("#link-composer-form"),
   linkInput: document.querySelector("#link-source-input"),
   linkEmoji: document.querySelector("#link-setting-emoji"),
+  linkSourceFormat: document.querySelector("#link-source-format"),
   linkCreate: document.querySelector("#create-link-link"),
   urlResult: document.querySelector("#url-result"),
   guardedOutput: document.querySelector("#guarded-link-output"),
@@ -192,15 +193,16 @@ function activeTextEncoder () {
   return elements.structural.checked ? compressTextV2 : compressTextV1;
 }
 
-function resolverOrigin () {
-  const root = rootURL();
-  if (["localhost", "127.0.0.1", "::1"].includes(root.hostname)) return root.origin;
-  return "https://lr.a.shel.sh";
+function resourceURLForTarget (target) {
+  return resolvedResourceURL(target);
 }
 
-function directResolverURL (target) {
-  const encoded = encodeDirectLinkTarget(target);
-  return `${resolverOrigin()}/lr/${encoded.payload}`;
+function selectedSourceMode () {
+  return {
+    markdown: "source-markdown",
+    javascript: "source-javascript",
+    html: "source-html"
+  }[elements.linkSourceFormat.value] || "source";
 }
 
 function setHeaderMode (mode) {
@@ -412,8 +414,8 @@ async function generateURLLinks () {
     const alphabet = elements.linkEmoji.checked ? outputAlphabetEmoji : outputAlphabetASCII;
     const encoded = encodeLinkTarget(source, alphabet);
     currentGuardedLink = outputLinkURL(encoded.payload, "guarded");
-    currentResolvedLink = directResolverURL(encoded.target);
-    currentSourceLink = outputLinkURL(encoded.payload, "source");
+    currentResolvedLink = outputLinkURL(encoded.payload, "resolved");
+    currentSourceLink = outputLinkURL(encoded.payload, selectedSourceMode());
     currentLiveSourceLink = outputLinkURL(encoded.payload, "source-live");
     currentImageLink = outputLinkURL(encoded.payload, "image");
     currentTarget = encoded.target;
@@ -457,7 +459,7 @@ function showResolvedLink (target) {
   hidePrimarySections();
   setHeaderMode("link");
   currentTarget = target;
-  const direct = directResolverURL(target);
+  const direct = resourceURLForTarget(target);
   elements.linkResolvedLabel.textContent = "Linkage · #lr:";
   elements.linkResolvedTarget.textContent = target;
   elements.linkResolvedOpen.href = direct;
@@ -476,7 +478,7 @@ async function resolveSourceLink (target, mode, generation, lineSlice = null) {
   hidePrimarySections();
   setHeaderMode("link");
   currentTarget = target;
-  const direct = directResolverURL(target);
+  const direct = resourceURLForTarget(target);
   const live = mode === "source-live";
   const requestedKind = requestedSourceKinds[mode] || "auto";
   elements.linkResolvedLabel.textContent = `Linkage · #${linkPrefixForMode(mode)}`;
@@ -492,12 +494,12 @@ async function resolveSourceLink (target, mode, generation, lineSlice = null) {
       headers: { accept: "text/html, application/xhtml+xml, text/plain;q=0.9, */*;q=0.1" }
     });
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`.trim());
-    const sourceURL = response.headers.get("x-lnkr-source-url") || target;
+    const sourceURL = response.headers.get("x-lnkr-source-url") || response.url || target;
     const contentType = response.headers.get("content-type") || "";
     if (!isTextualSourceResponse(sourceURL, contentType)) {
       elements.linkResolvedFrame.src = direct;
       document.title = "ln.kr · resolved bytes";
-      showToast("Binary source opened through the direct resolver");
+      showToast("Binary source opened directly");
       return;
     }
     const fetchedSource = applySourceLineSlice(await response.text(), lineSlice);
@@ -610,7 +612,7 @@ function imageViewerSource (target) {
 
 function showImageAlias (target) {
   const virtual = compressTextV1(
-    imageViewerSource(directResolverURL(target)),
+    imageViewerSource(resourceURLForTarget(target)),
     outputAlphabetASCII,
     "javascript"
   );
@@ -668,7 +670,7 @@ function showViewer (decoded, payload, alphabet) {
   const generation = ++renderGeneration;
   currentRender = expandSourceIncludes(decoded.text, {
     appURL: rootURL(),
-    resolverURLForTarget: directResolverURL
+    resourceURLForTarget
   }).then(expanded => {
     if (generation !== renderGeneration) return;
     currentRuntimeSource = expanded.text;
@@ -996,6 +998,9 @@ elements.qr.addEventListener("change", () => {
   if (!elements.result.hidden) generateLink();
 });
 elements.linkEmoji.addEventListener("change", () => {
+  if (!elements.urlResult.hidden) generateURLLinks();
+});
+elements.linkSourceFormat.addEventListener("change", () => {
   if (!elements.urlResult.hidden) generateURLLinks();
 });
 elements.linkQR.addEventListener("change", () => {

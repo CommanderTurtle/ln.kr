@@ -8,7 +8,6 @@ import {
 import {
   outputAlphabetASCII,
   outputAlphabetEmoji,
-  outputAlphabetPath,
   outputAlphabetQR
 } from "../docs/alphabets.js";
 
@@ -74,7 +73,7 @@ describe("upstream ha.mr compatibility", () => {
     };
 
     let state = 0x29a;
-    for (const alphabet of [outputAlphabetASCII, outputAlphabetQR, outputAlphabetPath]) {
+    for (const alphabet of [outputAlphabetASCII, outputAlphabetQR]) {
       for (let sample = 0; sample < 120; sample ++) {
         let number = 0n;
         const words = 1 + sample % 24;

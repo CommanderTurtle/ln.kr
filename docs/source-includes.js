@@ -120,12 +120,12 @@ function indentSource (source, indent) {
  */
 export async function expandSourceIncludes (source, {
   appURL,
-  resolverURLForTarget,
+  resourceURLForTarget,
   fetchImpl = globalThis.fetch,
   limits = defaultLimits
 }) {
-  if (!appURL || typeof resolverURLForTarget !== "function" || typeof fetchImpl !== "function") {
-    throw new Error("Source inclusion requires an app URL, resolver, and fetch implementation");
+  if (!appURL || typeof resourceURLForTarget !== "function" || typeof fetchImpl !== "function") {
+    throw new Error("Source inclusion requires an app URL, resource URL, and fetch implementation");
   }
 
   const state = {
@@ -139,14 +139,14 @@ export async function expandSourceIncludes (source, {
     if (state.raw.has(target)) return state.raw.get(target);
 
     const pending = (async () => {
-      const response = await fetchImpl(resolverURLForTarget(target), {
+      const response = await fetchImpl(resourceURLForTarget(target), {
         headers: { accept: "text/plain, text/markdown, text/css, text/javascript, */*;q=0.1" }
       });
       if (!response.ok) {
         throw new Error(`Source include failed: ${response.status} ${response.statusText}`.trim());
       }
 
-      const sourceURL = response.headers.get("x-lnkr-source-url") || target;
+      const sourceURL = response.headers.get("x-lnkr-source-url") || response.url || target;
       const contentType = response.headers.get("content-type") || "";
       if (!isTextualSourceResponse(sourceURL, contentType)) {
         throw new Error(`Source include is not text: ${sourceURL}`);

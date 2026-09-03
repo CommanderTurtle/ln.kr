@@ -110,6 +110,15 @@
             <span class="toggle-track" aria-hidden="true"></span>
             <span>Build QR</span>
           </label>
+          <label class="select-control">
+            <span>Source as</span>
+            <select id="link-source-format" autocomplete="off">
+              <option value="auto">Auto detect</option>
+              <option value="markdown">Markdown</option>
+              <option value="javascript">JavaScript</option>
+              <option value="html">HTML</option>
+            </select>
+          </label>
           <label id="link-qr-correct-container" class="select-control qr-level" hidden>
             <span>QR correction</span>
             <input id="link-qr-correct" type="range" min="0" max="3" step="1" value="1" autocomplete="off">
