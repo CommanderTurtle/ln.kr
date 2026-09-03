@@ -133,6 +133,14 @@ select { min-width: 9rem; border: 1px solid var(--line-strong); border-radius: 0
 .toggle input:checked + .toggle-track { border-color: var(--accent); background: rgba(168, 240, 180, 0.2); }
 .toggle input:checked + .toggle-track::after { transform: translateX(0.95rem); background: var(--accent); }
 .toggle input:focus-visible + .toggle-track { outline: 2px solid var(--accent); outline-offset: 3px; }
+.codec-control { display: grid; align-self: center; gap: 0.35rem; margin: 0; padding: 0; border: 0; }
+.codec-control legend { padding: 0; color: var(--muted); font-size: 0.73rem; }
+.codec-switch { display: grid; grid-template-columns: repeat(3, 1fr); overflow: hidden; border: 1px solid var(--line-strong); border-radius: 0.65rem; background: var(--surface-2); }
+.codec-switch input { position: absolute; opacity: 0; pointer-events: none; }
+.codec-switch label { min-width: 3rem; padding: 0.58rem 0.7rem; color: var(--muted); text-align: center; font: 700 0.74rem ui-monospace, monospace; cursor: pointer; user-select: none; }
+.codec-switch label + input + label { border-left: 1px solid var(--line-strong); }
+.codec-switch input:checked + label { color: #0b140d; background: var(--accent); }
+.codec-switch input:focus-visible + label { outline: 2px solid var(--accent); outline-offset: -3px; }
 
 .result-card { margin-top: 1rem; padding: clamp(1.2rem, 3vw, 2rem); }
 .result-heading, .viewer-heading, .runner-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }

@@ -46,11 +46,17 @@
               <option value="text">Plain text</option>
             </select>
           </label>
-          <label class="toggle">
-            <input type="checkbox" id="setting-structural" autocomplete="off">
-            <span class="toggle-track" aria-hidden="true"></span>
-            <span>Structural v2</span>
-          </label>
+          <fieldset class="codec-control">
+            <legend>Encoder</legend>
+            <div class="codec-switch">
+              <input type="radio" name="codec-version" id="codec-v1" value="v1" autocomplete="off" checked>
+              <label for="codec-v1">v1</label>
+              <input type="radio" name="codec-version" id="codec-v2" value="v2" autocomplete="off">
+              <label for="codec-v2">v2</label>
+              <input type="radio" name="codec-version" id="codec-v3" value="v3" autocomplete="off">
+              <label for="codec-v3">v3</label>
+            </div>
+          </fieldset>
           <label class="toggle">
             <input type="checkbox" id="setting-emoji" autocomplete="off">
             <span class="toggle-track" aria-hidden="true"></span>

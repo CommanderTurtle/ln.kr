@@ -11,8 +11,14 @@ The original v1 encoder remains frozen and is the default. Structural v2 is an
 explicit switch and a separate deterministic pipeline. Selecting v2 never runs
 v1 as a competing whole-document encoder and never falls back to it. v2 does
 reuse v1's fixed dictionary and record prices while constructing its own
-grammar. Both decoders validate the exact byte length, UTF-8, trailing sentinel,
+grammar. Every decoder validates the exact byte length, UTF-8, trailing sentinel,
 and CRC-32.
+
+Dictionary v3 is another explicit wire version. It retains v2's structural
+records, discovers those ranges first, then broadens the exact document-local
+vocabulary to repeated words, identifiers, punctuation atoms, and longer
+compatible-zone phrases. Up to 7,225 entries use a canonical, frequency-shaped
+codebook capped at 13 bits. v1 and v2 encoding remain byte-for-byte frozen.
 
 ## Explored approaches
 
@@ -147,6 +153,12 @@ reliably than percentages alone.
 | Generated repeated-rule stress corpus | 85,418 | 7,501 | 3,558 | 52.6% smaller |
 | Mixed HTML/CSS structural corpus | 16,196 | 3,643 | 1,876 | 48.5% smaller |
 | Markdown residual-line corpus | 5,779 | 1,508 | 811 | 46.2% smaller |
+
+The local 145,897-byte `cordis-paper.md` validation corpus produced 89,219 v1
+ASCII symbols, 84,884 v2 symbols, and 81,235 v3 symbols. v3 retained 534
+dictionary entries, emitted 3,954 dictionary references, and preserved the
+active v2 template and eight sparse-delta records. The corpus is deliberately
+not checked into the repository.
 
 The large workflow falls from 1,196,728 source bytes to 103,834 link symbols,
 or about 91.3% fewer symbols than source. Its v1 result was already unusually

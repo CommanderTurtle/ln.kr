@@ -5,14 +5,14 @@ import {
   outputAlphabetQR
 } from "./docs/alphabets.js";
 import { decodeDocumentPayload } from "./docs/payload.js";
-import { compressTextV1, compressTextV2 } from "./docs/text-compress.js";
+import { compressTextV1, compressTextV2, compressTextV3 } from "./docs/text-compress.js";
 import { splitExecutableFragment } from "./docs/viewer-runtime.js";
 
 const [, , command, inputArgument, alphabetArgument = "ascii", kind = "auto", version = "v1"] = process.argv;
 
 function usage (exitCode = 0) {
   console.error(`Usage:
-  lnkr encode <text|-> [ascii|emoji|qr] [auto|text|markdown|javascript|html] [v1|v2]
+  lnkr encode <text|-> [ascii|emoji|qr] [auto|text|markdown|javascript|html] [v1|v2|v3]
   lnkr decode <payload-or-url> [ascii|emoji|qr]
 
 Use - as the input to read exact UTF-8 text from stdin.`);
@@ -30,9 +30,11 @@ const alphabets = {
 
 if (command === "encode") {
   const alphabet = alphabets[alphabetArgument];
-  if (!alphabet || !["v1", "v2"].includes(version)) usage(2);
+  if (!alphabet || !["v1", "v2", "v3"].includes(version)) usage(2);
   const input = inputArgument === "-" ? readFileSync(0, "utf8") : inputArgument;
-  const encoder = version === "v2" ? compressTextV2 : compressTextV1;
+  const encoder = version === "v3"
+    ? compressTextV3
+    : version === "v2" ? compressTextV2 : compressTextV1;
   const payload = encoder(input, alphabet, kind).payload;
   console.log(alphabetArgument === "qr"
     ? `HTTPS://A.SHEL.SH/T/${payload}`
