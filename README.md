@@ -24,8 +24,9 @@ service; Link mode also remains entirely fragment-routed in the browser.
 
 The frozen v1 grammar combines a ranked code/Markdown dictionary with
 prior-output references. It is the default and does no structural discovery.
-The visible four-way encoder switch keeps that frozen v1 path, exposes
-**Structural v2** and **Dictionary v3**, and adds **DEFLATE v4**. v2 runs one deterministic
+The visible three-position encoder dial keeps that frozen v1 path and exposes
+**Structural v2** and **Dictionary v3**. A separate **DEFLATE v4** high-entropy
+override disables the dial while selected. v2 runs one deterministic
 four-phase pipeline:
 
 1. map HTML body/style/script regions, Markdown and its fenced languages or
@@ -119,7 +120,8 @@ cost model, and corpus measurements.
 
 The generated page provides:
 
-- an explicit **v1 / v2 / v3 / v4** encoder switch, with stable v1 as the default;
+- an explicit **v1 / v2 / v3** encoder dial, with stable v1 as the default, plus
+  a separate **DEFLATE v4** high-entropy override;
 - a GFM preview with authored HTML blocks, Mermaid diagrams,
   syntax highlighting, per-block copy actions, and an exact-source view;
 - **Copy raw** and **Copy rich**;
