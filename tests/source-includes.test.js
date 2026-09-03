@@ -3,6 +3,7 @@ import { outputAlphabetASCII } from "../docs/alphabets.js";
 import { encodeLinkTarget } from "../docs/link-runtime.js";
 import {
   applySourceLineSlice,
+  expandResolvedResourceLinks,
   expandSourceIncludes,
   sourceLinkFromLine,
   splitSourceLineSlice
@@ -39,6 +40,43 @@ function sourceHarness (sources, overrides = {}) {
 }
 
 describe("source includes", () => {
+  test("expands route-two URLs only in a private runtime copy", () => {
+    const target = "https://raw.example.test/image.webp";
+    const direct = sourceLink(target, "lr:");
+    const authored = [
+      `<img src="${direct}">`,
+      `const source = ${JSON.stringify(direct)};`,
+      `![animated source](${direct})`,
+      `.hero { background-image: url(${direct}); }`,
+      sourceLink(target, "l:"),
+      "https://elsewhere.test/#lr:not-this-app"
+    ].join("\n");
+
+    const runtime = expandResolvedResourceLinks(authored, { appURL });
+    expect(runtime).toContain(`<img src="${target}">`);
+    expect(runtime).toContain(`const source = ${JSON.stringify(target)};`);
+    expect(runtime).toContain(`![animated source](${target})`);
+    expect(runtime).toContain(`background-image: url(${target})`);
+    expect(runtime).toContain(sourceLink(target, "l:"));
+    expect(runtime).toContain("https://elsewhere.test/#lr:not-this-app");
+    expect(authored).toContain(direct);
+  });
+
+  test("expands route-two URLs after safe HTML attribute escaping", () => {
+    let target = "";
+    let direct = "";
+    for (let index = 0; index < 10_000; index ++) {
+      target = `https://raw.example.test/image.webp?variant=${index}`;
+      direct = sourceLink(target, "lr:");
+      if (direct.includes("&")) break;
+    }
+    expect(direct).toContain("&");
+
+    const authored = `<img src="${direct.replaceAll("&", "&amp;")}">`;
+    const runtime = expandResolvedResourceLinks(authored, { appURL });
+    expect(runtime).toBe(`<img src="${target.replaceAll("&", "&amp;")}">`);
+  });
+
   test("parses and applies CMD-style zero-based line slices exactly", () => {
     expect(splitSourceLineSlice("payload")).toEqual({ payload: "payload", lineSlice: null });
     expect(splitSourceLineSlice("payload::~0:5")).toEqual({
@@ -83,6 +121,9 @@ describe("source includes", () => {
     expect(sourceLinkFromLine(`[module](${link})\n`, appURL)).toBeNull();
     expect(sourceLinkFromLine(`${appURL}#s:`, appURL)).toBeNull();
     expect(sourceLinkFromLine(sourceLink(target, "lr:"), appURL)).toBeNull();
+    expect(sourceLinkFromLine(sourceLink(target, "hs:"), appURL)?.mode).toBe("source-live");
+    expect(sourceLinkFromLine(sourceLink("https://raw.example.test/image.webp", "i:"), appURL)?.mode).toBe("image");
+    expect(sourceLinkFromLine(sourceLink("https://raw.example.test/paper.pdf", "pdf:"), appURL)?.mode).toBe("pdf");
     expect(sourceLinkFromLine(`https://elsewhere.test/${link.slice(link.indexOf("#"))}`, appURL))
       .toBeNull();
   });
@@ -117,6 +158,45 @@ describe("source includes", () => {
     ].join("\n"));
     expect(expanded.modules).toBe(3);
     expect(harness.fetches).toBe(3);
+  });
+
+  test("turns bare source and media routes into runtime media modules", async () => {
+    const image = "https://raw.example.test/animated.avif";
+    const video = "https://raw.example.test/clip.webm";
+    const pdf = "https://raw.example.test/paper.pdf";
+    const harness = sourceHarness(new Map(), {
+      documentKind: "markdown",
+      resourceLinkForTarget: target => sourceLink(target, "lr:")
+    });
+    const authored = [
+      sourceLink(image, "s:"),
+      sourceLink(video, "media:"),
+      sourceLink(pdf, "pdf:")
+    ].join("\n");
+
+    const expanded = await expandSourceIncludes(authored, harness.options);
+    expect(harness.fetches).toBe(0);
+    expect(expanded.text).toContain("lnkr-module-image");
+    expect(expanded.text).toContain("<img src=\"");
+    expect(expanded.text).toContain("lnkr-module-video");
+    expect(expanded.text).toContain("<video src=\"");
+    expect(expanded.text).toContain("data-lnkr-pdf-source");
+    expect(expanded.text).toContain("new Blob([bytes],{type:'application/pdf'})");
+    expect(expanded.text).toContain("#lr:");
+  });
+
+  test("adds a hoverable exact-source capsule without changing authored shorthand", async () => {
+    const target = "https://raw.example.test/module.md";
+    const link = sourceLink(target, "sm:");
+    const harness = sourceHarness(new Map([
+      [target, { body: "## Imported\n", type: "text/markdown" }]
+    ]), { documentKind: "markdown", showModuleSource: true });
+
+    const expanded = await expandSourceIncludes(link, harness.options);
+    expect(expanded.text).toContain("## Imported\n");
+    expect(expanded.text).toContain("lnkr-module-source");
+    expect(expanded.text).toContain(link.replaceAll("&", "&amp;"));
+    expect(link).toContain("#sm:");
   });
 
   test("supports nested modules, detects cycles, and fetches repeated targets once", async () => {
@@ -159,7 +239,7 @@ describe("source includes", () => {
     expect(harness.fetches).toBe(1);
   });
 
-  test("keeps #lr links literal and rejects binary source modules", async () => {
+  test("keeps #lr links literal and restricts binary modules to rendered documents", async () => {
     const binary = "https://raw.example.test/manual.pdf";
     const direct = sourceLink("https://images.example.test/image.webp", "lr:");
     const harness = sourceHarness(new Map([
@@ -172,7 +252,7 @@ describe("source includes", () => {
     expect(harness.fetches).toBe(0);
 
     await expect(expandSourceIncludes(sourceLink(binary), harness.options))
-      .rejects.toThrow("Source include is not text");
+      .rejects.toThrow("A pdf module requires a Markdown or HTML document");
   });
 });
 
@@ -180,8 +260,10 @@ test("the existing preview and runners use expansions while source actions stay 
   const main = await Bun.file(new URL("../docs/main.js", import.meta.url)).text();
   expect(main).toContain("splitSourceLineSlice(linkage.payload)");
   expect(main).toContain("applySourceLineSlice(await response.text(), lineSlice)");
-  expect(main).toContain("currentRuntimeSource = expanded.text");
-  expect(main).toContain("renderContent(elements.preview, expanded.text, decoded.kind)");
+  expect(main).toContain("currentRuntimeSource = expandResolvedResourceLinks(expanded.text, { appURL })");
+  expect(main).toContain('const displaySource = ["markdown", "html"].includes(decoded.kind)');
+  expect(main).toContain("renderContent(elements.preview, displaySource, decoded.kind)");
+  expect(main).toContain("elements.preview.textContent = decoded.text");
   expect(main).toContain("window.eval(currentRuntimeSource)");
   expect(main).toContain("JSON.stringify(currentRuntimeSource)");
   expect(main).toContain("await copyText(currentDocument.text)");

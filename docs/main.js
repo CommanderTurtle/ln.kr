@@ -10,8 +10,11 @@ import {
   encodeLinkTarget,
   isTextualSourceResponse,
   isImageLinkTarget,
+  isPdfLinkTarget,
+  mediaLinkKind,
   linkPrefixForMode,
   resolvedResourceURL,
+  sourceResourceURL,
   sourceKindHint,
   splitLinkFragment
 } from "./link-runtime.js";
@@ -20,6 +23,7 @@ import { compressTextV1, compressTextV2, compressTextV3, compressTextV4, detectK
 import { renderContent } from "./render.js";
 import {
   applySourceLineSlice,
+  expandResolvedResourceLinks,
   expandSourceIncludes,
   splitSourceLineSlice
 } from "./source-includes.js";
@@ -44,7 +48,10 @@ const elements = {
   copyResolved: document.querySelector("#copy-resolved-link"),
   copySource: document.querySelector("#copy-source-link"),
   copyLiveSource: document.querySelector("#copy-live-source-link"),
+  copyFramed: document.querySelector("#copy-framed-link"),
   copyImage: document.querySelector("#copy-image-link"),
+  copyMedia: document.querySelector("#copy-media-link"),
+  copyPdf: document.querySelector("#copy-pdf-link"),
   urlResultMeta: document.querySelector("#url-result-meta"),
   linkQueryWarning: document.querySelector("#link-query-warning"),
   linkQR: document.querySelector("#link-setting-qr"),
@@ -60,6 +67,9 @@ const elements = {
   linkResolvedLabel: document.querySelector("#link-resolved-label"),
   linkResolvedTarget: document.querySelector("#link-resolved-target"),
   linkResolvedCopy: document.querySelector("#link-resolved-copy"),
+  linkResolvedDownload: document.querySelector("#link-resolved-download"),
+  linkResolvedExpand: document.querySelector("#link-resolved-expand"),
+  linkResolvedClose: document.querySelector("#link-resolved-close"),
   linkResolvedOpen: document.querySelector("#link-resolved-open"),
   linkResolvedFrame: document.querySelector("#link-resolved-frame"),
   viewer: document.querySelector("#viewer"),
@@ -117,10 +127,14 @@ let currentGuardedLink = "";
 let currentResolvedLink = "";
 let currentSourceLink = "";
 let currentLiveSourceLink = "";
+let currentFramedLink = "";
 let currentImageLink = "";
+let currentMediaLink = "";
+let currentPdfLink = "";
 let currentTarget = "";
 let currentDocument = null;
 let currentRuntimeSource = "";
+const moduleObjectURLs = new Set();
 let qrModule = null;
 let toastTimer = null;
 let runToken = null;
@@ -206,6 +220,15 @@ function resourceURLForTarget (target) {
   return resolvedResourceURL(target);
 }
 
+function sourceURLForTarget (target) {
+  return sourceResourceURL(target);
+}
+
+function shortResourceURL (target) {
+  const encoded = encodeLinkTarget(sourceURLForTarget(target), outputAlphabetASCII);
+  return outputLinkURL(encoded.payload, "resolved");
+}
+
 function selectedSourceMode () {
   return {
     markdown: "source-markdown",
@@ -223,6 +246,9 @@ function setHeaderMode (mode) {
 
 function hidePrimarySections ({ clearResolvedSource = true } = {}) {
   stopRunner();
+  setFramedExpanded(false);
+  for (const url of moduleObjectURLs) URL.revokeObjectURL(url);
+  moduleObjectURLs.clear();
   elements.composer.hidden = true;
   elements.linkComposer.hidden = true;
   elements.viewer.hidden = true;
@@ -436,12 +462,18 @@ async function generateURLLinks () {
     currentResolvedLink = outputLinkURL(encoded.payload, "resolved");
     currentSourceLink = outputLinkURL(encoded.payload, selectedSourceMode());
     currentLiveSourceLink = outputLinkURL(encoded.payload, "source-live");
+    currentFramedLink = outputLinkURL(encoded.payload, "framed");
     currentImageLink = outputLinkURL(encoded.payload, "image");
+    currentMediaLink = outputLinkURL(encoded.payload, "media");
+    currentPdfLink = outputLinkURL(encoded.payload, "pdf");
     currentTarget = encoded.target;
 
     elements.guardedOutput.textContent = currentGuardedLink;
     elements.guardedOutput.href = currentGuardedLink;
+    const mediaKind = mediaLinkKind(encoded.target);
     elements.copyImage.hidden = !isImageLinkTarget(encoded.target);
+    elements.copyMedia.hidden = !["video", "audio"].includes(mediaKind);
+    elements.copyPdf.hidden = !isPdfLinkTarget(encoded.target);
     elements.linkQueryWarning.hidden = new URL(encoded.target).searchParams.size <= 1;
 
     const symbols = countAlphabetSymbols(encoded.payload, alphabet);
@@ -475,16 +507,29 @@ function showGuardedLink (target) {
 }
 
 function showResolvedLink (target) {
+  window.location.replace(resourceURLForTarget(target));
+}
+
+function setFramedExpanded (expanded) {
+  elements.linkResolved.classList.toggle("link-resolved-expanded", expanded);
+  document.body.classList.toggle("link-frame-is-expanded", expanded);
+  elements.linkResolvedExpand.hidden = expanded;
+  elements.linkResolvedExpand.setAttribute("aria-expanded", String(expanded));
+  elements.linkResolvedClose.hidden = !expanded;
+  if (expanded) elements.linkResolvedClose.focus({ preventScroll: true });
+}
+
+function showFramedLink (target) {
   hidePrimarySections();
   setHeaderMode("link");
   currentTarget = target;
   const direct = resourceURLForTarget(target);
-  elements.linkResolvedLabel.textContent = "Linkage · #lr:";
+  elements.linkResolvedLabel.textContent = "Linkage · #lf:";
   elements.linkResolvedTarget.textContent = target;
   elements.linkResolvedOpen.href = direct;
   elements.linkResolvedFrame.src = direct;
   elements.linkResolved.hidden = false;
-  document.title = "ln.kr · resolved link";
+  document.title = "ln.kr · framed link";
 }
 
 const requestedSourceKinds = Object.freeze({
@@ -497,7 +542,7 @@ async function resolveSourceLink (target, mode, generation, lineSlice = null) {
   hidePrimarySections();
   setHeaderMode("link");
   currentTarget = target;
-  const direct = resourceURLForTarget(target);
+  const direct = sourceURLForTarget(target);
   const live = mode === "source-live";
   const requestedKind = requestedSourceKinds[mode] || "auto";
   elements.linkResolvedLabel.textContent = `Linkage · #${linkPrefixForMode(mode)}`;
@@ -516,10 +561,7 @@ async function resolveSourceLink (target, mode, generation, lineSlice = null) {
     const sourceURL = response.headers.get("x-lnkr-source-url") || response.url || target;
     const contentType = response.headers.get("content-type") || "";
     if (!isTextualSourceResponse(sourceURL, contentType)) {
-      elements.linkResolvedFrame.src = direct;
-      document.title = "ln.kr · resolved bytes";
-      showToast("Binary source opened directly");
-      return;
+      throw new Error(`The source is binary (${contentType || "unknown media type"})`);
     }
     const fetchedSource = applySourceLineSlice(await response.text(), lineSlice);
     const kind = requestedKind === "auto"
@@ -532,14 +574,81 @@ async function resolveSourceLink (target, mode, generation, lineSlice = null) {
     await new Promise(resolve => window.requestAnimationFrame(resolve));
     const encoded = compressTextV1(source, outputAlphabetASCII, kind);
     if (generation !== sourceResolveGeneration) return;
-    const liveKind = live && ["markdown", "html"].includes(kind) ? kind : "";
+    const liveKind = live && ["markdown", "html", "javascript"].includes(kind) ? kind : "";
     history.replaceState(null, "", outputURL(encoded.payload, liveKind));
     decodeLocation();
   } catch (error) {
     if (generation !== sourceResolveGeneration) return;
-    elements.linkResolvedFrame.src = direct;
+    elements.linkResolvedFrame.src = "about:blank";
+    document.title = "ln.kr · source unavailable";
     showToast(`Source could not be resolved: ${error.message || error}`, "error");
   }
+}
+
+function serializedFramedDocument () {
+  try {
+    const framed = elements.linkResolvedFrame.contentDocument;
+    if (!framed?.documentElement || elements.linkResolvedFrame.src === "about:blank") return "";
+    const type = framed.doctype;
+    const declaration = type
+      ? `<!DOCTYPE ${type.name}${type.publicId ? ` PUBLIC "${type.publicId}"` : ""}${type.systemId ? ` "${type.systemId}"` : ""}>\n`
+      : "";
+    return declaration + framed.documentElement.outerHTML;
+  } catch {
+    return "";
+  }
+}
+
+async function fetchFramedResource () {
+  if (!currentTarget) throw new Error("No framed target is open");
+  const response = await fetch(resourceURLForTarget(currentTarget), {
+    headers: { accept: "*/*" }
+  });
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`.trim());
+  return response;
+}
+
+function responseFilename (response) {
+  const disposition = response.headers.get("content-disposition") || "";
+  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  const quoted = disposition.match(/filename\s*=\s*"([^"]+)"/i)?.[1];
+  let name = encoded ? decodeURIComponent(encoded) : quoted;
+  if (!name) {
+    const url = new URL(response.url || currentTarget);
+    name = decodeURIComponent(url.pathname.split("/").filter(Boolean).at(-1) || "download");
+  }
+  return name.replace(/[\\/:*?"<>|]/g, "_");
+}
+
+async function copyFramedSource () {
+  const serialized = serializedFramedDocument();
+  if (serialized) {
+    await copyText(serialized);
+    return;
+  }
+
+  const response = await fetchFramedResource();
+  const contentType = response.headers.get("content-type") || "";
+  const sourceURL = response.url || currentTarget;
+  if (!isTextualSourceResponse(sourceURL, contentType)) {
+    throw new Error("The framed resource is binary; use Download instead");
+  }
+  await copyText(await response.text());
+}
+
+async function downloadFramedResource () {
+  const response = await fetchFramedResource();
+  const bytes = await response.arrayBuffer();
+  const objectURL = URL.createObjectURL(new Blob([bytes], {
+    type: response.headers.get("content-type") || "application/octet-stream"
+  }));
+  const anchor = document.createElement("a");
+  anchor.href = objectURL;
+  anchor.download = responseFilename(response);
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectURL), 0);
 }
 
 function imageViewerSource (target) {
@@ -631,7 +740,182 @@ function imageViewerSource (target) {
 
 function showImageAlias (target) {
   const virtual = compressTextV1(
-    imageViewerSource(resourceURLForTarget(target)),
+    imageViewerSource(shortResourceURL(target)),
+    outputAlphabetASCII,
+    "javascript"
+  );
+  const { decoded, payload, alphabet } = decodeDocumentPayload(
+    virtual.payload,
+    outputAlphabetASCII
+  );
+  showViewer(decoded, payload, alphabet);
+  elements.parentScope.checked = true;
+  updateRunMode();
+  window.queueMicrotask(runInParentScope);
+}
+
+function mediaViewerSource (target, kind) {
+  return `(function (src) {
+    var d = document,
+    o = d.createElement('div');
+    o.style = 'position:fixed;inset:0;background:rgba(0,0,0,0.9);display:flex;align-items:center;justify-content:center;z-index:999999';
+    var box = d.createElement('div');
+    box.style = 'position:relative;width:${kind === "video" ? "100%;height:100%" : "min(760px,calc(100% - 32px));padding:72px 24px 36px"};box-sizing:border-box;display:flex;align-items:center;justify-content:center;background:#111';
+    var x = d.createElement('button');
+    x.textContent = '✕';
+    x.style = 'position:absolute;top:10px;right:10px;font-size:22px;padding:4px 10px;z-index:10';
+    x.onclick = function () {
+        media.pause();
+        o.remove();
+    };
+    var media = d.createElement('${kind}');
+    media.src = src;
+    media.controls = true;
+    media.preload = 'metadata';
+    media.style = '${kind === "video" ? "display:block;max-width:100%;max-height:100%;margin:auto" : "display:block;width:100%"}';
+    box.appendChild(media);
+    box.appendChild(x);
+    o.appendChild(box);
+    d.body.appendChild(o);
+})(${JSON.stringify(target)});`;
+}
+
+function showMediaAlias (target) {
+  const kind = mediaLinkKind(target);
+  if (!['video', 'audio'].includes(kind)) {
+    throw new Error("The media route requires an audio or video URL");
+  }
+  const virtual = compressTextV1(
+    mediaViewerSource(shortResourceURL(target), kind),
+    outputAlphabetASCII,
+    "javascript"
+  );
+  const { decoded, payload, alphabet } = decodeDocumentPayload(
+    virtual.payload,
+    outputAlphabetASCII
+  );
+  showViewer(decoded, payload, alphabet);
+  elements.parentScope.checked = true;
+  updateRunMode();
+  window.queueMicrotask(runInParentScope);
+}
+
+function pdfViewerSource (target) {
+  return `(function (src) {
+    var d = document,
+    o = d.createElement('div');
+    o.style = 'position:fixed;inset:0;background:rgba(0,0,0,0.92);display:flex;align-items:center;justify-content:center;z-index:999999';
+    var box = d.createElement('div');
+    box.style = 'position:relative;width:100%;height:100%;overflow:hidden;background:#202124;display:grid;grid-template-rows:52px minmax(0,1fr)';
+    var tools = d.createElement('div');
+    tools.style = 'display:flex;align-items:center;gap:8px;padding:8px 12px;background:#151719;color:#fff;font:14px system-ui;z-index:10';
+    var x = d.createElement('button');
+    x.textContent = '✕';
+    x.title = 'Close';
+    var previous = d.createElement('button');
+    previous.textContent = '‹';
+    previous.title = 'Previous page';
+    var next = d.createElement('button');
+    next.textContent = '›';
+    next.title = 'Next page';
+    var page = d.createElement('input');
+    page.type = 'number';
+    page.min = '1';
+    page.value = '1';
+    page.title = 'Page';
+    page.style = 'width:68px';
+    var count = d.createElement('span');
+    count.textContent = '/ ?';
+    var layout = d.createElement('button');
+    layout.textContent = 'Single';
+    layout.title = 'Switch between single-page and book spread';
+    var nativeView = d.createElement('a');
+    nativeView.textContent = 'Open native ↗';
+    nativeView.target = '_blank';
+    nativeView.rel = 'noopener noreferrer';
+    nativeView.style = 'color:#fff;margin-left:auto';
+    [previous, next, layout, x].forEach(function (button) {
+        button.style = 'font:inherit;padding:5px 10px;color:#fff;background:#292d31;border:1px solid #50555b;border-radius:6px;cursor:pointer';
+    });
+    var status = d.createElement('div');
+    status.textContent = 'Loading PDF...';
+    status.style = 'display:grid;place-items:center;color:white;font:16px system-ui';
+    var pages = d.createElement('div');
+    pages.style = 'display:grid;grid-template-columns:minmax(0,1fr);gap:2px;min-height:0;background:#303337';
+    var first = d.createElement('iframe');
+    var second = d.createElement('iframe');
+    first.title = 'PDF page';
+    second.title = 'PDF facing page';
+    [first, second].forEach(function (frame) {
+        frame.style = 'width:100%;height:100%;border:0;background:white';
+    });
+    second.hidden = true;
+    var objectURL = '', spread = false, pageCount = 0;
+    function pageURL(number) {
+        return objectURL + '#page=' + number + '&zoom=page-fit&toolbar=0&navpanes=0';
+    }
+    function render() {
+        if (!objectURL) return;
+        var number = Math.max(1, parseInt(page.value, 10) || 1);
+        if (pageCount) number = Math.min(number, pageCount);
+        page.value = String(number);
+        first.src = pageURL(number);
+        second.hidden = !spread;
+        if (spread) second.src = pageURL(number + 1);
+        pages.style.gridTemplateColumns = spread ? 'repeat(2,minmax(0,1fr))' : 'minmax(0,1fr)';
+        layout.textContent = spread ? 'Book' : 'Single';
+    }
+    x.onclick = function () {
+        if (objectURL) URL.revokeObjectURL(objectURL);
+        o.remove();
+    };
+    previous.onclick = function () {
+        page.value = String(Math.max(1, Number(page.value) - (spread ? 2 : 1)));
+        render();
+    };
+    next.onclick = function () {
+        page.value = String(Number(page.value) + (spread ? 2 : 1));
+        render();
+    };
+    page.onchange = render;
+    layout.onclick = function () {
+        spread = !spread;
+        render();
+    };
+    tools.appendChild(previous);
+    tools.appendChild(page);
+    tools.appendChild(count);
+    tools.appendChild(next);
+    tools.appendChild(layout);
+    tools.appendChild(nativeView);
+    tools.appendChild(x);
+    pages.appendChild(first);
+    pages.appendChild(second);
+    box.appendChild(tools);
+    box.appendChild(status);
+    o.appendChild(box);
+    d.body.appendChild(o);
+    fetch(src).then(function (response) {
+        if (!response.ok) throw new Error(response.status + ' ' + response.statusText);
+        return response.arrayBuffer();
+    }).then(function (bytes) {
+        objectURL = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+        var binary = new TextDecoder('latin1').decode(bytes);
+        var counts = Array.from(binary.matchAll(/\\/Count\\s+(\\d+)/g), function (match) { return Number(match[1]); });
+        pageCount = counts.length ? Math.max.apply(Math, counts) : 0;
+        count.textContent = '/ ' + (pageCount || '?');
+        nativeView.href = objectURL;
+        status.replaceWith(pages);
+        render();
+    }).catch(function (error) {
+        status.textContent = 'PDF could not be loaded: ' + (error.message || error);
+    });
+})(${JSON.stringify(target)});`;
+}
+
+function showPdfAlias (target) {
+  const virtual = compressTextV1(
+    pdfViewerSource(shortResourceURL(target)),
     outputAlphabetASCII,
     "javascript"
   );
@@ -675,6 +959,30 @@ function updateRunMode () {
     : "Scripts allowed · network blocked · unique origin";
 }
 
+async function hydratePdfModules (container) {
+  await Promise.all(Array.from(container.querySelectorAll("[data-lnkr-pdf-source]"), async module => {
+    if (module.dataset.lnkrReady) return;
+    const host = module.querySelector("[data-lnkr-pdf-host]");
+    if (!host) return;
+    module.dataset.lnkrReady = "loading";
+    try {
+      const response = await fetch(module.dataset.lnkrPdfSource);
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`.trim());
+      const bytes = await response.arrayBuffer();
+      const objectURL = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+      moduleObjectURLs.add(objectURL);
+      const frame = document.createElement("iframe");
+      frame.src = objectURL;
+      frame.title = "PDF preview";
+      host.replaceChildren(frame);
+      module.dataset.lnkrReady = "true";
+    } catch (error) {
+      host.textContent = `PDF could not be loaded: ${error.message || error}`;
+      module.dataset.lnkrReady = "error";
+    }
+  }));
+}
+
 function showViewer (decoded, payload, alphabet) {
   hidePrimarySections();
   currentDocument = decoded;
@@ -687,17 +995,25 @@ function showViewer (decoded, payload, alphabet) {
   elements.viewerSummary.textContent = `${decoded.kind} · ${decoded.text.length.toLocaleString()} characters · format v${decoded.version}`;
   elements.sourceView.textContent = decoded.text;
   const generation = ++renderGeneration;
+  const appURL = rootURL();
   currentRender = expandSourceIncludes(decoded.text, {
-    appURL: rootURL(),
-    resourceURLForTarget
+    appURL,
+    documentKind: decoded.kind,
+    resourceLinkForTarget: shortResourceURL,
+    resourceURLForTarget: sourceURLForTarget,
+    showModuleSource: true
   }).then(expanded => {
     if (generation !== renderGeneration) return;
-    currentRuntimeSource = expanded.text;
-    return renderContent(elements.preview, expanded.text, decoded.kind);
+    currentRuntimeSource = expandResolvedResourceLinks(expanded.text, { appURL });
+    const displaySource = ["markdown", "html"].includes(decoded.kind)
+      ? currentRuntimeSource
+      : decoded.text;
+    return renderContent(elements.preview, displaySource, decoded.kind)
+      .then(() => hydratePdfModules(elements.preview));
   })
     .catch(error => {
       if (generation !== renderGeneration) return;
-      currentRuntimeSource = decoded.text;
+      currentRuntimeSource = expandResolvedResourceLinks(decoded.text, { appURL });
       elements.preview.textContent = decoded.text;
       showToast(`Rendered preview failed: ${error.message || error}`, "error");
     });
@@ -748,7 +1064,10 @@ function decodeLocation () {
         }
         const { target } = decodeLinkTarget(fragment, alphabetHint);
         if (linkage.mode === "resolved") showResolvedLink(target);
+        else if (linkage.mode === "framed") showFramedLink(target);
         else if (linkage.mode === "image") showImageAlias(target);
+        else if (linkage.mode === "media") showMediaAlias(target);
+        else if (linkage.mode === "pdf") showPdfAlias(target);
         else if (linkage.mode === "source" || linkage.mode === "source-live" ||
           linkage.mode.startsWith("source-")) {
           void resolveSourceLink(target, linkage.mode, navigationGeneration, lineSlice);
@@ -1085,6 +1404,14 @@ elements.copyLiveSource.addEventListener("click", async () => {
     showToast(error.message || String(error), "error");
   }
 });
+elements.copyFramed.addEventListener("click", async () => {
+  try {
+    await copyText(currentFramedLink);
+    showToast("In-frame link copied");
+  } catch (error) {
+    showToast(error.message || String(error), "error");
+  }
+});
 elements.copyImage.addEventListener("click", async () => {
   try {
     await copyText(currentImageLink);
@@ -1093,14 +1420,40 @@ elements.copyImage.addEventListener("click", async () => {
     showToast(error.message || String(error), "error");
   }
 });
-elements.linkResolvedCopy.addEventListener("click", async () => {
+elements.copyMedia.addEventListener("click", async () => {
   try {
-    await copyText(elements.linkResolvedFrame.src);
-    showToast("Direct source copied");
+    await copyText(currentMediaLink);
+    showToast("Media link copied");
   } catch (error) {
     showToast(error.message || String(error), "error");
   }
 });
+elements.copyPdf.addEventListener("click", async () => {
+  try {
+    await copyText(currentPdfLink);
+    showToast("PDF link copied");
+  } catch (error) {
+    showToast(error.message || String(error), "error");
+  }
+});
+elements.linkResolvedCopy.addEventListener("click", async () => {
+  try {
+    await copyFramedSource();
+    showToast("Framed source copied");
+  } catch (error) {
+    showToast(error.message || String(error), "error");
+  }
+});
+elements.linkResolvedDownload.addEventListener("click", async () => {
+  try {
+    await downloadFramedResource();
+    showToast("Download started");
+  } catch (error) {
+    showToast(error.message || String(error), "error");
+  }
+});
+elements.linkResolvedExpand.addEventListener("click", () => setFramedExpanded(true));
+elements.linkResolvedClose.addEventListener("click", () => setFramedExpanded(false));
 elements.renderTab.addEventListener("click", () => selectTab("rendered"));
 elements.sourceTab.addEventListener("click", () => selectTab("source"));
 elements.copyRaw.addEventListener("click", async () => {
@@ -1176,6 +1529,10 @@ window.addEventListener("message", event => {
   elements.runnerLog.append(line);
 });
 window.addEventListener("keydown", event => {
+  if (event.key === "Escape" && elements.linkResolved.classList.contains("link-resolved-expanded")) {
+    setFramedExpanded(false);
+    return;
+  }
   if (event.key === "Escape" && elements.runner.classList.contains("runner-expanded")) {
     setRunnerExpanded(false);
   }
