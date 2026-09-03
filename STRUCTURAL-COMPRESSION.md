@@ -155,10 +155,12 @@ reliably than percentages alone.
 | Markdown residual-line corpus | 5,779 | 1,508 | 811 | 46.2% smaller |
 
 The local 145,897-byte `cordis-paper.md` validation corpus produced 89,219 v1
-ASCII symbols, 84,884 v2 symbols, and 81,235 v3 symbols. v3 retained 534
-dictionary entries, emitted 3,954 dictionary references, and preserved the
-active v2 template and eight sparse-delta records. The corpus is deliberately
-not checked into the repository.
+ASCII symbols, 84,884 v2 symbols, 81,235 v3 symbols, and 61,566 explicit v4
+symbols. v3 retained 534 dictionary entries, emitted 3,954 dictionary
+references, and preserved the active v2 template and eight sparse-delta
+records. v4's level-9 zlib stream was 49,178 bytes and its final alphabet
+payload was 24.2% shorter than v3. The corpus is deliberately not checked into
+the repository.
 
 The large workflow falls from 1,196,728 source bytes to 103,834 link symbols,
 or about 91.3% fewer symbols than source. Its v1 result was already unusually
@@ -182,6 +184,7 @@ and removes another 61 transport symbols beyond v1.
 - frozen ha.mr ASCII, QR, and emoji fixtures remain exact;
 - v1 remains decodable and byte-for-byte stable for unambiguous transports;
 - v2 round trips through ASCII, QR, and emoji alphabets;
+- v3 document dictionaries and v4 DEFLATE round trip through every transport;
 - deterministic tests cover chained generations, recurring lexical phrases,
   HTML/CSS/JavaScript sectors, Markdown fences and authored HTML, exact line
   families, compressed definition streams, and reusable residual shapes;

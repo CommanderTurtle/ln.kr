@@ -4,11 +4,13 @@ import {
   numberToString,
   stringToNumber
 } from "./compress.js";
+import { deflate, inflate } from "./vendor/pako.esm.min.js";
 
 const MAGIC = 0x4c4e; // "LN", read least-significant bit first.
 const LEGACY_VERSION = 1;
 const STRUCTURED_VERSION = 2;
 const DICTIONARY_VERSION = 3;
+const DEFLATE_VERSION = 4;
 const MIN_COPY = 4;
 const MAX_CHAIN = 64;
 const MIN_PATCH = 32;
@@ -83,6 +85,7 @@ export const textDictionary = Object.freeze([
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const dictionaryBytes = textDictionary.map(value => encoder.encode(value));
+const byteHex = Array.from({ length: 256 }, (_, value) => value.toString(16).padStart(2, "0"));
 const dictionaryValues = new Set(textDictionary);
 
 function buildDictionaryTrie (extraEntries = []) {
@@ -2239,6 +2242,63 @@ function encodePlan (plan, alphabet) {
   };
 }
 
+function deflateNumber (bytes) {
+  // The high sentinel bit preserves every leading/trailing zero byte while the
+  // existing bijective alphabet transport carries the complete bitstream.
+  const parts = new Array(bytes.length + 1);
+  parts[0] = "1";
+  for (let index = 0; index < bytes.length; index ++) {
+    parts[index + 1] = byteHex[bytes[bytes.length - index - 1]];
+  }
+  return BigInt(`0x${parts.join("")}`);
+}
+
+function encodeDeflate (text, kind, alphabet) {
+  const bytes = encoder.encode(text);
+  const compressed = deflate(bytes, { level: 9 });
+  const lengthBits = gammaBits(bytes.length + 1);
+  const compressedLengthBits = gammaBits(compressed.length + 1);
+  const checksum = crc32(bytes);
+
+  let number = deflateNumber(compressed);
+  number = huffmanEncode(number, compressedLengthBits);
+  number = huffmanEncode(number, fixedBits(checksum, 32));
+  number = huffmanEncode(number, lengthBits);
+  number = huffmanEncode(number, fixedBits(KIND_TO_NUMBER[kind], 2));
+  number = huffmanEncode(number, fixedBits(DEFLATE_VERSION, 3));
+  number = huffmanEncode(number, fixedBits(MAGIC, 16));
+
+  const payload = numberToString(number, alphabet);
+  return {
+    payload,
+    kind,
+    stats: {
+      version: DEFLATE_VERSION,
+      bytes: bytes.length,
+      compressedBytes: compressed.length,
+      bits: 16 + 3 + 2 + lengthBits.length + 32 + compressedLengthBits.length + compressed.length * 8,
+      symbols: countAlphabetSymbols(payload, alphabet),
+      tokens: 0,
+      ascii: 0,
+      dictionary: 0,
+      lexeme: 0,
+      copy: 0,
+      raw: 0,
+      patch: 0,
+      template: 0,
+      lexicon: 0,
+      lexiconWidth: 0,
+      lexiconUse: 0,
+      templates: 0,
+      templateUse: 0,
+      sectorTemplateUse: 0,
+      lineTemplateUse: 0,
+      patchDefinition: 0,
+      patchReuse: 0
+    }
+  };
+}
+
 function resolveKind (text, requestedKind) {
   if (typeof text !== "string") throw new TypeError("Text must be a string");
   const kind = requestedKind === "auto" ? detectKind(text) : requestedKind;
@@ -2264,6 +2324,12 @@ export function compressTextV3 (text, alphabet, requestedKind = "auto") {
   return encodePlan(createEncodingPlan(text, kind, DICTIONARY_VERSION), alphabet);
 }
 
+/** Traditional zlib-wrapped DEFLATE, selected explicitly by the caller. */
+export function compressTextV4 (text, alphabet, requestedKind = "auto") {
+  const kind = resolveKind(text, requestedKind);
+  return encodeDeflate(text, kind, alphabet);
+}
+
 /**
  * Default exact UTF-8 encoder. Structural discovery is deliberately opt-in so
  * ordinary links retain v1's stable wire format and never pay for a v2 pass.
@@ -2283,13 +2349,38 @@ export function decompressText (payload, alphabet) {
   if (magic !== MAGIC) throw new Error("Not an ln.kr text payload");
 
   const version = Number(reader.readFixed(3));
-  if (![LEGACY_VERSION, STRUCTURED_VERSION, DICTIONARY_VERSION].includes(version)) {
+  if (![LEGACY_VERSION, STRUCTURED_VERSION, DICTIONARY_VERSION, DEFLATE_VERSION].includes(version)) {
     throw new Error(`Unsupported ln.kr version: ${version}`);
   }
 
   const kindNumber = Number(reader.readFixed(2));
   const expectedLength = reader.readGamma() - 1;
   const expectedChecksum = Number(reader.readFixed(32));
+
+  if (version === DEFLATE_VERSION) {
+    const compressedLength = reader.readGamma() - 1;
+    if (compressedLength < 0) throw new Error("Invalid ln.kr DEFLATE length");
+    const compressed = [];
+    for (let index = 0; index < compressedLength; index ++) {
+      compressed.push(Number(reader.readFixed(8)));
+    }
+    if (reader.number !== 1n) throw new Error("ln.kr payload has trailing data");
+
+    let bytes;
+    try {
+      bytes = inflate(Uint8Array.from(compressed));
+    } catch (error) {
+      throw new Error("Invalid ln.kr DEFLATE stream", { cause: error });
+    }
+    if (bytes.length !== expectedLength) throw new Error("ln.kr byte length mismatch");
+    if (crc32(bytes) !== expectedChecksum) throw new Error("ln.kr checksum mismatch");
+    return {
+      text: decoder.decode(bytes),
+      kind: NUMBER_TO_KIND[kindNumber],
+      version
+    };
+  }
+
   const output = [];
   const patchShapes = [];
   const lexicon = [];
