@@ -1,17 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
   outputAlphabetASCII,
-  outputAlphabetEmoji,
-  outputAlphabetPath
+  outputAlphabetEmoji
 } from "../docs/alphabets.js";
 import {
   anchorResolvedHTML,
-  decodeDirectLinkTarget,
   decodeLinkTarget,
-  encodeDirectLinkTarget,
   encodeLinkTarget,
   isTextualSourceResponse,
   linkPrefixForMode,
+  resolvedResourceURL,
   sourceKindHint,
   splitLinkFragment,
   validateLinkTarget
@@ -38,7 +36,7 @@ describe("link routes", () => {
     expect(linkPrefixForMode("source-live")).toBe("hs:");
   });
 
-  test("classifies textual source without treating binary resolver responses as UTF-8", () => {
+  test("classifies textual source without treating binary resources as UTF-8", () => {
     expect(sourceKindHint("https://raw.example.test/README.md", "text/plain")).toBe("markdown");
     expect(sourceKindHint("https://cdn.example.test/app", "application/javascript; charset=utf-8"))
       .toBe("javascript");
@@ -66,11 +64,9 @@ describe("link routes", () => {
     expect(encoded.target).toBe("http://example.com/image.webp");
   });
 
-  test("uses a path-safe alphabet for the direct byte resolver", () => {
-    const encoded = encodeDirectLinkTarget("https://images.example.com/source.webp?size=full");
-    expect(encoded.payload).toMatch(/^[-0-9A-Z_a-z]+$/);
-    expect(decodeDirectLinkTarget(encoded.payload).target).toBe(encoded.target);
-    expect(outputAlphabetPath).toHaveLength(64);
+  test("never invents a physical resolver path or hostname", () => {
+    const target = "https://images.example.com/source.webp?size=full";
+    expect(resolvedResourceURL(target)).toBe(target);
   });
 
   test("rejects non-web protocols and credentials", () => {
@@ -125,7 +121,9 @@ test("the image alias expands to the established editable JavaScript viewer", as
   expect(source).toContain("img.referrerPolicy = 'no-referrer'");
   expect(source).toContain("showViewer(decoded, payload, alphabet)");
   expect(source).toContain("window.queueMicrotask(runInParentScope)");
-  expect(source).toContain("imageViewerSource(directResolverURL(target))");
+  expect(source).toContain("imageViewerSource(resourceURLForTarget(target))");
+  expect(source).toContain('currentResolvedLink = outputLinkURL(encoded.payload, "resolved")');
+  expect(source).not.toContain("lr.a.shel.sh");
 });
 
 test("source routes detect text kinds, anchor only HTML, and reuse existing viewers", async () => {
@@ -136,6 +134,8 @@ test("source routes detect text kinds, anchor only HTML, and reuse existing view
   const source = sources.join("\n");
   expect(source).toContain('id="copy-source-link"');
   expect(source).toContain('id="copy-live-source-link"');
+  expect(source).toContain('id="link-source-format"');
+  expect(source).toContain('currentSourceLink = outputLinkURL(encoded.payload, selectedSourceMode())');
   expect(source).toContain('sourceKindHint(sourceURL, contentType) || detectKind(fetchedSource)');
   expect(source).toContain('kind === "html"');
   expect(source).toContain('anchorResolvedHTML(fetchedSource, sourceURL)');
