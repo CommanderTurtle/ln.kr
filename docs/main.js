@@ -16,7 +16,7 @@ import {
   splitLinkFragment
 } from "./link-runtime.js";
 import { decodeDocumentPayload } from "./payload.js";
-import { compressTextV1, compressTextV2, detectKind } from "./text-compress.js";
+import { compressTextV1, compressTextV2, compressTextV3, detectKind } from "./text-compress.js";
 import { renderContent } from "./render.js";
 import {
   applySourceLineSlice,
@@ -66,7 +66,6 @@ const elements = {
   form: document.querySelector("#composer-form"),
   input: document.querySelector("#source-input"),
   format: document.querySelector("#source-format"),
-  structural: document.querySelector("#setting-structural"),
   emoji: document.querySelector("#setting-emoji"),
   qr: document.querySelector("#setting-qr"),
   sourceCount: document.querySelector("#source-count"),
@@ -190,7 +189,10 @@ function outputLinkURL (payload, mode) {
 }
 
 function activeTextEncoder () {
-  return elements.structural.checked ? compressTextV2 : compressTextV1;
+  const version = new FormData(elements.form).get("codec-version");
+  if (version === "v3") return compressTextV3;
+  if (version === "v2") return compressTextV2;
+  return compressTextV1;
 }
 
 function resourceURLForTarget (target) {
@@ -359,8 +361,12 @@ async function generateLink () {
     ];
     if (encoded.stats.lexicon) {
       recordSummary.push(
-        `${encoded.stats.lexicon} document grammar symbols`,
-        `${encoded.stats.lexiconUse} grammar references`
+        encoded.stats.version === 3
+          ? `${encoded.stats.lexicon} document dictionary entries`
+          : `${encoded.stats.lexicon} document grammar symbols`,
+        encoded.stats.version === 3
+          ? `${encoded.stats.lexiconUse} token references · ≤${encoded.stats.lexiconWidth}-bit IDs`
+          : `${encoded.stats.lexiconUse} grammar references`
       );
     }
     if (encoded.stats.templates) {

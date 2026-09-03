@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   outputAlphabetASCII,
   outputAlphabetEmoji,
@@ -11,6 +12,7 @@ import {
   compressText,
   compressTextV1,
   compressTextV2,
+  compressTextV3,
   decompressText,
   detectKind,
   textDictionary
@@ -41,6 +43,13 @@ describe("ln.kr exact text codec", () => {
       outputAlphabetASCII,
       "javascript"
     ).payload).toBe("_/7KJ?mPwor/O=(ew=v,a2hf*");
+  });
+
+  test("keeps the existing v2 text stream byte-for-byte compatible", () => {
+    const source = "## Stable v2\n\nDependencies remain exact.\n\n```js\nfunction sample(value) { return value + 1; }\n```\n".repeat(3);
+    expect(compressTextV2(source, outputAlphabetASCII, "markdown").payload).toBe(
+      "_P@~N=(y~Hnedre0y96~d8h7sG$Rptfx;@HHky~?qJaOWcs/V,p,sUDQv.&Zu!l'LJQwMLQM+'kF4jS.uo'+AtLZ[6d3!9EM!s#"
+    );
   });
 
   for (const alphabet of [outputAlphabetASCII, outputAlphabetEmoji, outputAlphabetQR]) {
@@ -142,6 +151,54 @@ describe("ln.kr exact text codec", () => {
       if (alphabet === outputAlphabetASCII) {
         expect(encoded.payload.length).toBeLessThan(legacy.payload.length);
       }
+    }
+  });
+
+  test("builds a bounded v3 dictionary for scattered words and code tokens", () => {
+    let state = 0x51f15e;
+    const noise = length => Array.from({ length }, () => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return String.fromCharCode(33 + state % 90);
+    }).join("");
+    const terms = [
+      "dependencies", "architecture", "deterministic", "implementation",
+      "compression", "structural", "dictionary", "references", "documents",
+      "javascript", "markdown", "preservation", "compatible", "runtime",
+      "payload", "symbols"
+    ];
+    const source = Array.from({ length: 160 }, (_, index) =>
+      `${noise(20)} ${terms[index % terms.length]} ${noise(20)} ${terms[(index * 7) % terms.length]} ${noise(10)}`
+    ).join("\n");
+    const structured = compressTextV2(source, outputAlphabetASCII, "text");
+    const encoded = compressTextV3(source, outputAlphabetASCII, "text");
+
+    expect(encoded.stats.version).toBe(3);
+    expect(encoded.stats.lexicon).toBeGreaterThan(0);
+    expect(encoded.stats.lexicon).toBeLessThanOrEqual(7225);
+    expect(encoded.stats.lexiconWidth).toBeLessThanOrEqual(13);
+    expect(encoded.stats.lexiconUse).toBeGreaterThan(50);
+    expect(encoded.payload.length).toBeLessThan(structured.payload.length);
+    expect(createHash("sha256").update(encoded.payload).digest("hex")).toBe(
+      "59bab1633acbcea720fbc9f923f1b2618f97f3e477b9dc2534185d975ab0ab74"
+    );
+    expect(decompressText(encoded.payload, outputAlphabetASCII).text).toBe(source);
+  });
+
+  test("round trips v3 structural dictionaries through every transport", () => {
+    const source = Array.from({ length: 72 }, (_, index) => [
+      `export function dependency_${index} (value) {`,
+      `  const endpoint = "https://example.test/api/${index}";`,
+      `  const dependencies = registry.resolve("shared-${index % 9}");`,
+      "  return { endpoint, dependencies, value };",
+      "}"
+    ].join("\n")).join("\n\n");
+
+    for (const alphabet of [outputAlphabetASCII, outputAlphabetEmoji, outputAlphabetQR]) {
+      const encoded = compressTextV3(source, alphabet, "javascript");
+      expect(encoded.stats.version).toBe(3);
+      expect(encoded.stats.lexiconWidth).toBeLessThanOrEqual(13);
+      expect(encoded.stats.patch + encoded.stats.template).toBeGreaterThan(0);
+      expect(decompressText(encoded.payload, alphabet).text).toBe(source);
     }
   });
 
@@ -286,9 +343,11 @@ describe("ln.kr exact text codec", () => {
       const encoded = compressText(source, outputAlphabetASCII, "text");
       const legacy = compressTextV1(source, outputAlphabetASCII, "text");
       const structured = compressTextV2(source, outputAlphabetASCII, "text");
+      const dictionary = compressTextV3(source, outputAlphabetASCII, "text");
       expect(encoded.payload.length).toBeLessThanOrEqual(legacy.payload.length);
       expect(decompressText(encoded.payload, outputAlphabetASCII).text).toBe(source);
       expect(decompressText(structured.payload, outputAlphabetASCII).text).toBe(source);
+      expect(decompressText(dictionary.payload, outputAlphabetASCII).text).toBe(source);
     }
   });
 });

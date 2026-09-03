@@ -23,8 +23,9 @@ service; Link mode also remains entirely fragment-routed in the browser.
 
 The frozen v1 grammar combines a ranked code/Markdown dictionary with
 prior-output references. It is the default and does no structural discovery.
-The visible **Structural v2** switch runs one deterministic four-phase
-pipeline:
+The visible three-way encoder switch keeps that frozen v1 path, exposes
+**Structural v2**, and adds **Dictionary v3**. v2 runs one deterministic
+four-phase pipeline:
 
 1. map HTML body/style/script regions, Markdown and its fenced languages or
    authored HTML, and sustained CSS/JavaScript/JSON-looking sectors;
@@ -41,10 +42,10 @@ can become references for later blocks, and recurring residual layouts reuse
 one shape definition. Format recognition only supplies byte boundaries; it
 never rewrites, normalizes, or semantically evaluates the source.
 
-The choice is explicit: v1 runs only v1, and v2 runs only the full v2 pipeline.
-There is no whole-document v1 trial, fallback, or auto-selection inside v2.
+The choice is explicit: each selection runs only its own complete pipeline.
+There is no whole-document trial, fallback, or automatic winner selection.
 The fixed v1 record costs are reused as the local price scale for references,
-and unreferenced definitions are discarded deterministically. Both formats
+and unreferenced definitions are discarded deterministically. All three formats
 decode on the same page. The byte count, UTF-8 validation, trailing-data check,
 and CRC-32 must all agree before a document is rendered.
 
@@ -56,6 +57,19 @@ URL symbol. v2's incremental gain appears on repeated families whose fields
 actually differ; definitions that cease to repay themselves after exact-copy
 selection are removed.
 
+Dictionary v3 preserves those structural templates, sparse residuals, static
+dictionary records, and prior-output copies. It discovers structure first,
+then builds a broader document vocabulary from exact words, identifiers,
+punctuation atoms, and compatible-zone phrases. A costed vocabulary may hold
+up to 7,225 entries. Its canonical frequency-shaped codes are carried in the
+payload, are at most 13 bits each, and favor the entries actually referenced
+most often. Entries still have to repay their definition and codebook bytes;
+one-use words are not added merely to make the entry count larger.
+
+v3 is a separate wire version and never changes a v1 or v2 link. Like v2, it
+does not run another whole-document encoder and silently choose the smaller
+result. All three versions decode on the same static page.
+
 See [FORMAT.md](FORMAT.md) for the wire format and
 [STRUCTURAL-COMPRESSION.md](STRUCTURAL-COMPRESSION.md) for the design attempts,
 cost model, and corpus measurements.
@@ -64,7 +78,7 @@ cost model, and corpus measurements.
 
 The generated page provides:
 
-- an explicit **Structural v2** encoder switch, with stable v1 as the default;
+- an explicit **v1 / v2 / v3** encoder switch, with stable v1 as the default;
 - a GFM preview with authored HTML blocks, Mermaid diagrams,
   syntax highlighting, per-block copy actions, and an exact-source view;
 - **Copy raw** and **Copy rich**;
@@ -173,6 +187,7 @@ both environments.
 ```bash
 node standalone.js encode "const answer = 42;" ascii javascript
 node standalone.js encode "const answer = 42;" ascii javascript v2
+node standalone.js encode "const answer = 42;" ascii javascript v3
 node standalone.js decode "https://a.shel.sh/#..."
 
 # Preserve a file exactly through stdin
@@ -210,6 +225,7 @@ The suite covers:
 - deterministic mixed-Unicode fuzz cases;
 - ambiguity-safe emoji boundaries;
 - randomized and multigeneration structural-v2 round trips;
+- bounded, frequency-shaped v3 dictionaries through every transport alphabet;
 - payload corruption rejection;
 - viewer URL-mode contracts;
 - fragment-only guarded, direct, source, live-source, sliced-module, and image routes;

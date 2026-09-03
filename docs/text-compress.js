@@ -8,6 +8,7 @@ import {
 const MAGIC = 0x4c4e; // "LN", read least-significant bit first.
 const LEGACY_VERSION = 1;
 const STRUCTURED_VERSION = 2;
+const DICTIONARY_VERSION = 3;
 const MIN_COPY = 4;
 const MAX_CHAIN = 64;
 const MIN_PATCH = 32;
@@ -20,6 +21,10 @@ const MIN_LEXEME_BYTES = 2;
 const MAX_LEXEME_BYTES = 192;
 const MIN_LEXEME_OCCURRENCES = 3;
 const MAX_LEXICON_ENTRIES = 512;
+const MAX_V3_LEXICON_ENTRIES = 7225;
+const MAX_V3_LEXEME_BYTES = 512;
+const MAX_V3_GRAMMAR_UNITS = 32;
+const MAX_V3_PHRASE_ENTRIES = 2048;
 const MAX_GRAMMAR_UNITS = 16;
 const GRAMMAR_SEEN_SIZE = 1 << 19;
 const MIN_TEMPLATE_OCCURRENCES = 3;
@@ -149,7 +154,7 @@ function hash4 (bytes, index) {
   );
 }
 
-function findDictionaryMatch (bytes, position, trie = dictionaryTrie) {
+function findDictionaryMatch (bytes, position, trie = dictionaryTrie, lexemeBitCosts = null) {
   let node = trie;
   let best = null;
 
@@ -158,8 +163,12 @@ function findDictionaryMatch (bytes, position, trie = dictionaryTrie) {
     if (!node) break;
     if (node.index >= 0) {
       const length = index - position + 1;
-      const bitLength = (node.type === "lexeme" ? 4 : 2) +
-        gammaBitLength(node.index + 1);
+      const lexemeBits = typeof lexemeBitCosts === "number"
+        ? lexemeBitCosts
+        : lexemeBitCosts?.[node.index];
+      const bitLength = node.type === "lexeme" && lexemeBits !== undefined
+        ? 4 + lexemeBits
+        : (node.type === "lexeme" ? 4 : 2) + gammaBitLength(node.index + 1);
       const savings = length * 8 - bitLength;
       if (savings > 0 && (!best || savings > best.savings)) {
         best = { type: node.type, index: node.index, length, bitLength, savings };
@@ -411,7 +420,7 @@ function addChains (bytes, chains, start, end) {
   }
 }
 
-function findLexemePath (bytes, position, trie) {
+function findLexemePath (bytes, position, trie, lexemeBitCosts = null) {
   let cursor = position;
   let first = null;
   let savings = 0;
@@ -422,7 +431,7 @@ function findLexemePath (bytes, position, trie) {
   // saving beats the competing range record, taking the first step is safe;
   // the lexeme will be reconsidered at the following position.
   for (let step = 0; step < 4 && cursor < bytes.length; step ++) {
-    const match = findDictionaryMatch(bytes, cursor, trie);
+    const match = findDictionaryMatch(bytes, cursor, trie, lexemeBitCosts);
     if (match?.type === "lexeme") {
       return { first: first || match, savings: savings + match.savings };
     }
@@ -444,7 +453,8 @@ function tokenize (
   structured = false,
   legacyCosts = null,
   activeDictionaryTrie = dictionaryTrie,
-  templateCandidates = null
+  templateCandidates = null,
+  lexemeBitCosts = null
 ) {
   const tokens = [];
   const chains = new Map();
@@ -452,11 +462,16 @@ function tokenize (
   let lastPatchProbe = -PATCH_PROBE_STEP;
 
   while (position < bytes.length) {
-    const dictionary = findDictionaryMatch(bytes, position, activeDictionaryTrie);
+    const dictionary = findDictionaryMatch(
+      bytes,
+      position,
+      activeDictionaryTrie,
+      lexemeBitCosts
+    );
     const copy = findCopyMatch(bytes, position, chains);
     const lexemePath = activeDictionaryTrie === dictionaryTrie
       ? null
-      : findLexemePath(bytes, position, activeDictionaryTrie);
+      : findLexemePath(bytes, position, activeDictionaryTrie, lexemeBitCosts);
     const template = templateCandidates?.get(position)?.[0] || null;
     let patch = null;
     if (
@@ -1312,6 +1327,280 @@ function collectLexemeCandidates (text, legacyCosts, zones) {
   return selectLexiconCandidates(candidates, legacyCosts);
 }
 
+function compareByteEntries (left, right) {
+  const length = Math.min(left.length, right.length);
+  for (let index = 0; index < length; index ++) {
+    if (left[index] !== right[index]) return left[index] - right[index];
+  }
+  return left.length - right.length;
+}
+
+function lexiconBitWidth (entryCount) {
+  return Math.max(1, Math.ceil(Math.log2(Math.max(1, entryCount))));
+}
+
+function sameCodeLengths (left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function buildV3Codebook (entryCount, tokens = []) {
+  if (!entryCount) return { lengths: new Uint8Array(), codes: [] };
+
+  const frequencies = new Uint32Array(entryCount);
+  frequencies.fill(1);
+  for (const token of tokens) {
+    if (token.type === "lexeme" && token.index < entryCount) frequencies[token.index] ++;
+  }
+
+  const ranked = Array.from(
+    { length: entryCount },
+    (_, index) => ({ index, weight: frequencies[index] })
+  ).sort((left, right) => right.weight - left.weight || left.index - right.index);
+  const lengths = new Uint8Array(entryCount);
+
+  const assign = (start, end, depth) => {
+    if (end - start === 1) {
+      lengths[ranked[start].index] = Math.max(1, depth);
+      return;
+    }
+
+    const childCapacity = 2 ** (13 - depth - 1);
+    const minimumSplit = Math.max(start + 1, end - childCapacity);
+    const maximumSplit = Math.min(end - 1, start + childCapacity);
+    let totalWeight = 0;
+    for (let index = start; index < end; index ++) totalWeight += ranked[index].weight;
+    const target = totalWeight / 2;
+    let leftWeight = 0;
+    let split = minimumSplit;
+    let bestDistance = Infinity;
+    for (let index = start; index < end - 1; index ++) {
+      leftWeight += ranked[index].weight;
+      const candidate = index + 1;
+      if (candidate < minimumSplit || candidate > maximumSplit) continue;
+      const distance = Math.abs(target - leftWeight);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        split = candidate;
+      }
+    }
+    assign(start, split, depth + 1);
+    assign(split, end, depth + 1);
+  };
+  assign(0, ranked.length, 0);
+
+  const canonical = Array.from(
+    { length: entryCount },
+    (_, index) => ({ index, length: lengths[index] })
+  ).sort((left, right) => left.length - right.length || left.index - right.index);
+  const codes = new Array(entryCount);
+  let code = 0;
+  let previousLength = 0;
+  for (const item of canonical) {
+    code *= 2 ** (item.length - previousLength);
+    codes[item.index] = code.toString(2).padStart(item.length, "0");
+    code ++;
+    previousLength = item.length;
+  }
+  return { lengths, codes };
+}
+
+function buildV3DecodeTable (lengths) {
+  if (!lengths.length) return new Map();
+  const canonical = Array.from(lengths, (length, index) => ({ index, length }))
+    .sort((left, right) => left.length - right.length || left.index - right.index);
+  const table = new Map();
+  let code = 0;
+  let previousLength = 0;
+  for (const item of canonical) {
+    if (item.length < 1 || item.length > 13) {
+      throw new Error("Invalid ln.kr v3 dictionary code length");
+    }
+    code *= 2 ** (item.length - previousLength);
+    if (code >= 2 ** item.length) {
+      throw new Error("Invalid ln.kr v3 dictionary codebook");
+    }
+    const bits = code.toString(2).padStart(item.length, "0");
+    if (table.has(bits)) throw new Error("Duplicate ln.kr v3 dictionary code");
+    table.set(bits, item.index);
+    code ++;
+    previousLength = item.length;
+  }
+  return table;
+}
+
+/**
+ * v3 prices a document vocabulary at each possible fixed-width boundary.
+ * The identifier itself is never wider than 13 bits (7,225 entries), while
+ * definitions that do not repay their header bytes are never admitted.
+ */
+function selectV3LexiconCandidates (candidates, legacyCosts) {
+  const ranked = [];
+  for (const [value, candidate] of candidates) {
+    if (candidate.positions.length < candidate.minimumOccurrences) continue;
+    const baseline = candidate.positions.reduce(
+      (total, start) => total + legacyCosts[start + candidate.bytes.length] - legacyCosts[start],
+      0
+    );
+    const first = candidate.positions[0];
+    const firstCost = legacyCosts[first + candidate.bytes.length] - legacyCosts[first];
+    const definitionCost = gammaBitLength(candidate.bytes.length) +
+      Math.min(candidate.bytes.length * 8, firstCost);
+    const optimisticGain = baseline - candidate.positions.length * 5 - definitionCost;
+    if (optimisticGain > 2) {
+      ranked.push({ ...candidate, value, baseline, definitionCost, optimisticGain });
+    }
+  }
+
+  const byGainAtWidth = width => (left, right) => {
+    const leftGain = left.baseline - left.positions.length * (4 + width) - left.definitionCost;
+    const rightGain = right.baseline - right.positions.length * (4 + width) - right.definitionCost;
+    return rightGain - leftGain ||
+      right.positions.length - left.positions.length ||
+      right.bytes.length - left.bytes.length ||
+      (left.value < right.value ? -1 : left.value > right.value ? 1 : 0);
+  };
+
+  let best = [];
+  let bestGain = 0;
+  for (let width = 1; width <= 13; width ++) {
+    const capacity = Math.min(2 ** width, MAX_V3_LEXICON_ENTRIES);
+    const ordered = [...ranked].sort(byGainAtWidth(width));
+    const selected = [];
+    const selectedPhrases = [];
+    for (const candidate of ordered) {
+      if (selected.length >= capacity) break;
+      const gain = candidate.baseline -
+        candidate.positions.length * (4 + width) - candidate.definitionCost;
+      if (gain <= 2) continue;
+      if (candidate.phrase) {
+        if (selectedPhrases.length >= MAX_V3_PHRASE_ENTRIES) continue;
+        if (selectedPhrases.some(existing => phrasesCompete(candidate.value, existing.value))) {
+          continue;
+        }
+        selectedPhrases.push(candidate);
+      }
+      selected.push(candidate);
+    }
+
+    const actualWidth = lexiconBitWidth(selected.length);
+    if (actualWidth > width) continue;
+    const gain = selected.reduce(
+      (total, candidate) => total + candidate.baseline -
+        candidate.positions.length * (4 + actualWidth) - candidate.definitionCost,
+      0
+    );
+    if (gain > bestGain || (gain === bestGain && selected.length < best.length)) {
+      best = selected;
+      bestGain = gain;
+    }
+  }
+
+  return best.map(candidate => candidate.bytes).sort(compareByteEntries);
+}
+
+/**
+ * v3 starts from the same read-only structural zones as v2, then discovers a
+ * broader exact vocabulary: words/identifiers, repeated punctuation atoms,
+ * and compatible-zone phrases up to 32 generic units. No syntax is rewritten.
+ */
+function collectV3LexemeCandidates (text, legacyCosts, zones) {
+  const candidates = new Map();
+  const units = [];
+  let byteCursor = 0;
+
+  for (const match of text.matchAll(/([\p{L}\p{N}_$-]+)|(\s+)|([^\p{L}\p{N}_$\s-]+)/gu)) {
+    const value = match[0];
+    const byteLength = /^[\x00-\x7f]*$/.test(value)
+      ? value.length
+      : encoder.encode(value).length;
+    const unit = {
+      value,
+      word: match[1] !== undefined,
+      whitespace: match[2] !== undefined,
+      zoneKind: structuralZoneAt(zones, match.index).kind,
+      codeStart: match.index,
+      codeEnd: match.index + value.length,
+      byteStart: byteCursor,
+      byteEnd: byteCursor + byteLength,
+      hash: hashUnit(value)
+    };
+    units.push(unit);
+    byteCursor += byteLength;
+
+    if (
+      unit.whitespace ||
+      byteLength < MIN_LEXEME_BYTES ||
+      byteLength > MAX_V3_LEXEME_BYTES ||
+      dictionaryValues.has(value)
+    ) continue;
+
+    const candidate = candidates.get(value) || {
+      bytes: encoder.encode(value),
+      positions: [],
+      minimumOccurrences: 2,
+      phrase: false
+    };
+    candidate.positions.push(unit.byteStart);
+    candidates.set(value, candidate);
+  }
+
+  const occupied = new Uint8Array(GRAMMAR_SEEN_SIZE);
+  const hashes = new Uint32Array(GRAMMAR_SEEN_SIZE);
+  const firstCodeStart = new Uint32Array(GRAMMAR_SEEN_SIZE);
+  const firstCodeEnd = new Uint32Array(GRAMMAR_SEEN_SIZE);
+  const firstByteStart = new Uint32Array(GRAMMAR_SEEN_SIZE);
+  const seenMask = GRAMMAR_SEEN_SIZE - 1;
+
+  for (let start = 0; start < units.length; start ++) {
+    if (units[start].whitespace) continue;
+    let sequenceHash = 2166136261;
+    let contentUnits = 0;
+
+    for (
+      let end = start;
+      end < Math.min(units.length, start + MAX_V3_GRAMMAR_UNITS);
+      end ++
+    ) {
+      const unit = units[end];
+      if (unit.zoneKind !== units[start].zoneKind) break;
+      sequenceHash = Math.imul(sequenceHash ^ unit.hash, 16777619) >>> 0;
+      if (!unit.whitespace) contentUnits ++;
+      const count = end - start + 1;
+      const byteLength = unit.byteEnd - units[start].byteStart;
+      if (byteLength > MAX_V3_LEXEME_BYTES) break;
+      if (count < 2 || unit.whitespace || contentUnits < 2 || byteLength < 6) continue;
+
+      const hash = Math.imul(sequenceHash ^ count, 2246822519) >>> 0;
+      const slot = hash & seenMask;
+      if (!occupied[slot]) {
+        occupied[slot] = 1;
+        hashes[slot] = hash;
+        firstCodeStart[slot] = units[start].codeStart;
+        firstCodeEnd[slot] = unit.codeEnd;
+        firstByteStart[slot] = units[start].byteStart;
+        continue;
+      }
+      if (hashes[slot] !== hash) continue;
+
+      const value = text.slice(units[start].codeStart, unit.codeEnd);
+      if (text.slice(firstCodeStart[slot], firstCodeEnd[slot]) !== value) continue;
+      if (dictionaryValues.has(value)) continue;
+      const candidate = candidates.get(value) || {
+        bytes: encoder.encode(value),
+        positions: [firstByteStart[slot]],
+        minimumOccurrences: 2,
+        phrase: true
+      };
+      if (candidate.positions.at(-1) !== units[start].byteStart) {
+        candidate.positions.push(units[start].byteStart);
+      }
+      candidates.set(value, candidate);
+    }
+  }
+
+  return selectV3LexiconCandidates(candidates, legacyCosts);
+}
+
 function pruneLexicon (entries, tokens, legacyCosts, countReserve = 2) {
   if (!entries.length) return entries;
   const gains = new Float64Array(entries.length);
@@ -1339,12 +1628,45 @@ function pruneLexicon (entries, tokens, legacyCosts, countReserve = 2) {
     .map(candidate => candidate.entry);
 }
 
-function buildLexiconHeaderBits (entries) {
+function pruneV3Lexicon (entries, tokens, legacyCosts, codeLengths = null) {
+  if (!entries.length) return entries;
+  const bitCosts = codeLengths || lexiconBitWidth(entries.length);
+  const gains = new Float64Array(entries.length);
+  const uses = new Uint32Array(entries.length);
+
+  for (const token of tokens) {
+    if (token.type !== "lexeme") continue;
+    uses[token.index] ++;
+    gains[token.index] += legacyCosts[token.start + token.length] - legacyCosts[token.start] -
+      tokenBits(token, DICTIONARY_VERSION, bitCosts).length;
+  }
+
+  return entries.map((entry, index) => {
+    const definitionTokens = tokenize(entry);
+    const definitionBits = definitionTokens.reduce(
+      (total, token) => total + tokenBits(token, LEGACY_VERSION).length,
+      gammaBitLength(entry.length)
+    );
+    return { entry, gain: gains[index], uses: uses[index], definitionBits };
+  }).filter(candidate => candidate.uses > 0 && candidate.gain > candidate.definitionBits + 2)
+    .sort((left, right) => compareByteEntries(left.entry, right.entry))
+    .map(candidate => candidate.entry);
+}
+
+function buildLexiconHeaderBits (entries, codeLengths = null) {
   let bits = gammaBits(entries.length + 1);
   let byteLength = 0;
   for (const entry of entries) {
     bits += gammaBits(entry.length);
     byteLength += entry.length;
+  }
+  if (codeLengths) {
+    if (codeLengths.length !== entries.length) {
+      throw new Error("ln.kr v3 dictionary codebook does not match its entries");
+    }
+    for (const length of codeLengths) {
+      bits += fixedBits(length, 4);
+    }
   }
 
   // Definitions are themselves a tiny v1 stream.  A phrase such as an HTML
@@ -1404,6 +1726,19 @@ function settleLexicon (initialLexicon, bytes, legacyCosts) {
   return lexicon;
 }
 
+function settleV3Lexicon (initialLexicon, bytes, legacyCosts) {
+  let lexicon = initialLexicon;
+  for (let pass = 0; pass < 6; pass ++) {
+    const width = lexiconBitWidth(lexicon.length);
+    const trie = lexicon.length ? buildDictionaryTrie(lexicon) : dictionaryTrie;
+    const tokens = tokenize(bytes, false, null, trie, null, width);
+    const pruned = pruneV3Lexicon(lexicon, tokens, legacyCosts);
+    if (sameEntries(pruned, lexicon)) break;
+    lexicon = pruned;
+  }
+  return lexicon;
+}
+
 function pruneTemplateEntries (templates, tokens, legacyCosts) {
   if (!templates.length) return templates;
   const gains = new Float64Array(templates.length);
@@ -1414,6 +1749,22 @@ function pruneTemplateEntries (templates, tokens, legacyCosts) {
     uses[token.index] ++;
     gains[token.index] += legacyCosts[token.start + token.length] - legacyCosts[token.start] -
       tokenBits(token, STRUCTURED_VERSION).length;
+  }
+
+  return templates.filter((template, index) =>
+    uses[index] > 0 && gains[index] > template.definitionBits + 2);
+}
+
+function pruneV3TemplateEntries (templates, tokens, legacyCosts, lexiconWidth) {
+  if (!templates.length) return templates;
+  const gains = new Float64Array(templates.length);
+  const uses = new Uint32Array(templates.length);
+
+  for (const token of tokens) {
+    if (token.type !== "template") continue;
+    uses[token.index] ++;
+    gains[token.index] += legacyCosts[token.start + token.length] - legacyCosts[token.start] -
+      tokenBits(token, DICTIONARY_VERSION, lexiconWidth).length;
   }
 
   return templates.filter((template, index) =>
@@ -1433,6 +1784,17 @@ function structuredPlanBitLength (tokens, lexicon, templates) {
       // than the legacy raw candidate price); every other candidate already
       // carries its exact v2 bit length.
       (total, token) => total + token.bitLength + (token.type === "raw" ? 2 : 0),
+      0
+    );
+}
+
+function dictionaryPlanBitLength (tokens, lexicon, templates, codebook) {
+  const pricedTokens = tokens.map(token => token.type === "patch" ? { ...token } : token);
+  assignPatchGrammar(pricedTokens);
+  return buildLexiconHeaderBits(lexicon, codebook.lengths).length +
+    buildTemplateHeaderBits(templates).length +
+    pricedTokens.reduce(
+      (total, token) => total + tokenBits(token, DICTIONARY_VERSION, codebook.codes).length,
       0
     );
 }
@@ -1501,7 +1863,108 @@ function buildStructuredTokens (text, bytes, legacyCosts, kind) {
   return { tokens: best.tokens, lexicon: best.lexicon, templates: best.templates, zones };
 }
 
-function tokenBits (token, version) {
+function buildDictionaryTokens (text, bytes, legacyCosts, kind) {
+  const zones = scanStructuralZones(text, kind);
+
+  // Structural families are discovered first. The exact token dictionary is
+  // then built over the same immutable zones and competes only at emission.
+  let templates = collectStructuralTemplates(text, bytes, zones, legacyCosts);
+  let lexicon = settleV3Lexicon(
+    collectV3LexemeCandidates(text, legacyCosts, zones),
+    bytes,
+    legacyCosts
+  );
+  let tokens = [];
+  let codebook = buildV3Codebook(lexicon.length);
+  let best = null;
+  let converged = false;
+
+  for (let pass = 0; pass < 10; pass ++) {
+    const trie = lexicon.length ? buildDictionaryTrie(lexicon) : dictionaryTrie;
+    const candidates = buildTemplateCandidateMap(templates, legacyCosts);
+    const provisional = tokenize(
+      bytes,
+      true,
+      legacyCosts,
+      trie,
+      candidates,
+      codebook.lengths
+    );
+    const observedCodebook = buildV3Codebook(lexicon.length, provisional);
+    tokens = tokenize(
+      bytes,
+      true,
+      legacyCosts,
+      trie,
+      candidates,
+      observedCodebook.lengths
+    );
+    const refinedCodebook = buildV3Codebook(lexicon.length, tokens);
+    const bits = dictionaryPlanBitLength(tokens, lexicon, templates, refinedCodebook);
+    if (
+      !best || bits < best.bits ||
+      (bits === best.bits && lexicon.length + templates.length < best.definitionCount)
+    ) {
+      best = {
+        bits,
+        definitionCount: lexicon.length + templates.length,
+        tokens,
+        lexicon,
+        templates,
+        codebook: refinedCodebook
+      };
+    }
+    const nextLexicon = pruneV3Lexicon(
+      lexicon,
+      tokens,
+      legacyCosts,
+      refinedCodebook.lengths
+    );
+    const nextTemplates = pruneV3TemplateEntries(
+      templates,
+      tokens,
+      legacyCosts,
+      refinedCodebook.lengths
+    );
+    const stableEntries = sameEntries(nextLexicon, lexicon);
+    const stableTemplates = sameEntries(nextTemplates, templates);
+    const stableCodes = sameCodeLengths(codebook.lengths, refinedCodebook.lengths);
+    if (stableEntries && stableTemplates && stableCodes) {
+      converged = true;
+      break;
+    }
+    lexicon = nextLexicon;
+    templates = nextTemplates;
+    codebook = stableEntries
+      ? refinedCodebook
+      : buildV3Codebook(lexicon.length);
+  }
+
+  if (!converged) {
+    const trie = lexicon.length ? buildDictionaryTrie(lexicon) : dictionaryTrie;
+    tokens = tokenize(
+      bytes,
+      true,
+      legacyCosts,
+      trie,
+      buildTemplateCandidateMap(templates, legacyCosts),
+      codebook.lengths
+    );
+    codebook = buildV3Codebook(lexicon.length, tokens);
+    const bits = dictionaryPlanBitLength(tokens, lexicon, templates, codebook);
+    if (!best || bits < best.bits) best = { bits, tokens, lexicon, templates, codebook };
+  }
+
+  return {
+    tokens: best.tokens,
+    lexicon: best.lexicon,
+    templates: best.templates,
+    codebook: best.codebook,
+    zones
+  };
+}
+
+function tokenBits (token, version, lexemeCoding = 0) {
   if (token.type === "ascii") {
     return "0" + fixedBits(token.byte, 7);
   }
@@ -1509,6 +1972,14 @@ function tokenBits (token, version) {
     return "10" + gammaBits(token.index + 1);
   }
   if (token.type === "lexeme") {
+    if (version === DICTIONARY_VERSION) {
+      const code = typeof lexemeCoding === "number"
+        ? fixedBits(token.index, lexemeCoding)
+        : typeof lexemeCoding[token.index] === "string"
+          ? lexemeCoding[token.index]
+          : "0".repeat(lexemeCoding[token.index]);
+      return "1110" + code;
+    }
     return "1110" + gammaBits(token.index + 1);
   }
   if (token.type === "copy") {
@@ -1651,25 +2122,43 @@ function createEncodingPlan (text, kind, version, bytes = null, legacyTokens = n
   let tokens;
   let lexicon = [];
   let templates = [];
-  if (version === STRUCTURED_VERSION) {
+  let codebook = { lengths: new Uint8Array(), codes: [] };
+  if (version === STRUCTURED_VERSION || version === DICTIONARY_VERSION) {
     legacyTokens ||= tokenize(bytes);
     const legacyCosts = buildLegacyCostPrefix(bytes.length, legacyTokens);
-    ({ tokens, lexicon, templates } = buildStructuredTokens(text, bytes, legacyCosts, kind));
+    const built = version === DICTIONARY_VERSION
+      ? buildDictionaryTokens(text, bytes, legacyCosts, kind)
+      : buildStructuredTokens(text, bytes, legacyCosts, kind);
+    tokens = built.tokens;
+    lexicon = built.lexicon;
+    templates = built.templates;
+    if (built.codebook) codebook = built.codebook;
   } else {
     tokens = tokenize(bytes);
   }
-  const grammarCounts = version === STRUCTURED_VERSION
+  const hasDocumentGrammar = version === STRUCTURED_VERSION || version === DICTIONARY_VERSION;
+  const grammarCounts = hasDocumentGrammar
     ? assignPatchGrammar(tokens)
     : { patchDefinition: 0, patchReuse: 0 };
   const checksum = crc32(bytes);
   const lengthBits = gammaBits(bytes.length + 1);
-  const lexiconBits = version === STRUCTURED_VERSION
-    ? buildLexiconHeaderBits(lexicon)
+  const lexiconBits = hasDocumentGrammar
+    ? buildLexiconHeaderBits(
+        lexicon,
+        version === DICTIONARY_VERSION ? codebook.lengths : null
+      )
     : "";
-  const templateBits = version === STRUCTURED_VERSION
+  const templateBits = hasDocumentGrammar
     ? buildTemplateHeaderBits(templates)
     : "";
-  const tokenSequences = tokens.map(token => tokenBits(token, version));
+  const lexemeWidth = version === DICTIONARY_VERSION && codebook.lengths.length
+    ? Math.max(...codebook.lengths)
+    : 0;
+  const tokenSequences = tokens.map(token => tokenBits(
+    token,
+    version,
+    version === DICTIONARY_VERSION ? codebook.codes : 0
+  ));
   const tokenBitLength = tokenSequences.reduce((total, bits) => total + bits.length, 0);
   const counts = {
     ascii: 0,
@@ -1680,6 +2169,7 @@ function createEncodingPlan (text, kind, version, bytes = null, legacyTokens = n
     patch: 0,
     template: 0,
     lexicon: lexicon.length,
+    lexiconWidth: version === DICTIONARY_VERSION ? lexemeWidth : 0,
     lexiconUse: 0,
     templates: templates.length,
     templateUse: 0,
@@ -1721,7 +2211,7 @@ function encodePlan (plan, alphabet) {
   for (let index = plan.tokenSequences.length - 1; index >= 0; index --) {
     number = huffmanEncode(number, plan.tokenSequences[index]);
   }
-  if (plan.version === STRUCTURED_VERSION) {
+  if (plan.version === STRUCTURED_VERSION || plan.version === DICTIONARY_VERSION) {
     number = huffmanEncode(number, plan.templateBits);
     number = huffmanEncode(number, plan.lexiconBits);
   }
@@ -1768,6 +2258,12 @@ export function compressTextV2 (text, alphabet, requestedKind = "auto") {
   return encodePlan(createEncodingPlan(text, kind, STRUCTURED_VERSION), alphabet);
 }
 
+/** Dictionary-first v3 encoder, selected explicitly by the caller. */
+export function compressTextV3 (text, alphabet, requestedKind = "auto") {
+  const kind = resolveKind(text, requestedKind);
+  return encodePlan(createEncodingPlan(text, kind, DICTIONARY_VERSION), alphabet);
+}
+
 /**
  * Default exact UTF-8 encoder. Structural discovery is deliberately opt-in so
  * ordinary links retain v1's stable wire format and never pay for a v2 pass.
@@ -1787,7 +2283,7 @@ export function decompressText (payload, alphabet) {
   if (magic !== MAGIC) throw new Error("Not an ln.kr text payload");
 
   const version = Number(reader.readFixed(3));
-  if (![LEGACY_VERSION, STRUCTURED_VERSION].includes(version)) {
+  if (![LEGACY_VERSION, STRUCTURED_VERSION, DICTIONARY_VERSION].includes(version)) {
     throw new Error(`Unsupported ln.kr version: ${version}`);
   }
 
@@ -1798,17 +2294,25 @@ export function decompressText (payload, alphabet) {
   const patchShapes = [];
   const lexicon = [];
   const templates = [];
+  let v3CodeTable = new Map();
+  let v3MaximumCodeLength = 0;
 
-  if (version === STRUCTURED_VERSION) {
+  if (version === STRUCTURED_VERSION || version === DICTIONARY_VERSION) {
     const count = reader.readGamma() - 1;
-    if (count < 0 || count > MAX_LEXICON_ENTRIES) {
+    const maximumEntries = version === DICTIONARY_VERSION
+      ? MAX_V3_LEXICON_ENTRIES
+      : MAX_LEXICON_ENTRIES;
+    const maximumLength = version === DICTIONARY_VERSION
+      ? MAX_V3_LEXEME_BYTES
+      : MAX_LEXEME_BYTES;
+    if (count < 0 || count > maximumEntries) {
       throw new Error("Invalid ln.kr structural lexicon size");
     }
     let lexiconBytes = 0;
     const lengths = [];
     for (let entry = 0; entry < count; entry ++) {
       const length = reader.readGamma();
-      if (length < MIN_LEXEME_BYTES || length > MAX_LEXEME_BYTES) {
+      if (length < MIN_LEXEME_BYTES || length > maximumLength) {
         throw new Error("Invalid ln.kr structural lexeme length");
       }
       lexiconBytes += length;
@@ -1816,6 +2320,20 @@ export function decompressText (payload, alphabet) {
         throw new Error("ln.kr structural lexicon exceeds the document length");
       }
       lengths.push(length);
+    }
+    if (version === DICTIONARY_VERSION) {
+      const codeLengths = [];
+      for (let entry = 0; entry < count; entry ++) {
+        const length = Number(reader.readFixed(4));
+        if (length < 1 || length > 13) {
+          throw new Error("Invalid ln.kr v3 dictionary code length");
+        }
+        codeLengths.push(length);
+      }
+      for (const length of codeLengths) {
+        v3MaximumCodeLength = Math.max(v3MaximumCodeLength, length);
+      }
+      v3CodeTable = buildV3DecodeTable(codeLengths);
     }
     const definitionBytes = decodeLegacySection(reader, lexiconBytes);
     let definitionOffset = 0;
@@ -1869,130 +2387,164 @@ export function decompressText (payload, alphabet) {
     }
   };
 
-  while (output.length < expectedLength) {
-    if (reader.readBit() === 0) {
-      ensureLength(1);
-      output.push(Number(reader.readFixed(7)));
-      continue;
+  const appendAsciiRecord = () => {
+    ensureLength(1);
+    output.push(Number(reader.readFixed(7)));
+  };
+
+  const appendDictionaryRecord = () => {
+    const index = reader.readGamma() - 1;
+    const bytes = dictionaryBytes[index];
+    if (!bytes) throw new Error(`Unknown ln.kr dictionary entry: ${index}`);
+    ensureLength(bytes.length);
+    output.push(...bytes);
+  };
+
+  const appendCopyRecord = () => {
+    const distance = reader.readGamma();
+    const length = reader.readGamma() + MIN_COPY - 1;
+    if (distance < 1 || distance > output.length) {
+      throw new Error("Invalid ln.kr copy distance");
     }
-
-    if (reader.readBit() === 0) {
-      const index = reader.readGamma() - 1;
-      const bytes = dictionaryBytes[index];
-      if (!bytes) throw new Error(`Unknown ln.kr dictionary entry: ${index}`);
-      ensureLength(bytes.length);
-      output.push(...bytes);
-      continue;
+    ensureLength(length);
+    for (let index = 0; index < length; index ++) {
+      output.push(output[output.length - distance]);
     }
+  };
 
-    if (reader.readBit() === 0) {
-      const distance = reader.readGamma();
-      const length = reader.readGamma() + MIN_COPY - 1;
-      if (distance < 1 || distance > output.length) {
-        throw new Error("Invalid ln.kr copy distance");
-      }
-      ensureLength(length);
-      for (let index = 0; index < length; index ++) {
-        output.push(output[output.length - distance]);
-      }
-      continue;
+  const appendLexemeRecord = index => {
+    const bytes = lexicon[index];
+    if (!bytes) throw new Error(`Unknown ln.kr structural lexeme: ${index}`);
+    ensureLength(bytes.length);
+    output.push(...bytes);
+  };
+
+  const readV3LexemeIndex = () => {
+    let code = "";
+    for (let bit = 0; bit < v3MaximumCodeLength; bit ++) {
+      code += reader.readBit();
+      if (v3CodeTable.has(code)) return v3CodeTable.get(code);
     }
+    throw new Error("Invalid ln.kr v3 dictionary reference");
+  };
 
-    if (version === STRUCTURED_VERSION) {
-      if (reader.readBit() === 0) {
-        const index = reader.readGamma() - 1;
-        const bytes = lexicon[index];
-        if (!bytes) throw new Error(`Unknown ln.kr structural lexeme: ${index}`);
-        ensureLength(bytes.length);
-        output.push(...bytes);
-        continue;
-      }
-
-      if (reader.readBit() === 0) {
-        const rawLength = reader.readGamma();
-        ensureLength(rawLength);
-        for (let index = 0; index < rawLength; index ++) {
-          output.push(Number(reader.readFixed(8)));
-        }
-        continue;
-      }
-
-      const reuseShape = reader.readBit() === 1;
-      let distance = reader.readGamma();
-      if (reuseShape && distance === 1) {
-        const templateIndex = reader.readGamma() - 1;
-        const template = templates[templateIndex];
-        if (!template) throw new Error(`Unknown ln.kr structural template: ${templateIndex}`);
-        for (let hole = 0; hole < template.holeCount; hole ++) {
-          const staticSegment = template.staticSegments[hole];
-          ensureLength(staticSegment.length);
-          output.push(...staticSegment);
-          const holeLength = reader.readGamma() - 1;
-          ensureLength(holeLength);
-          for (let index = 0; index < holeLength; index ++) {
-            output.push(Number(reader.readFixed(8)));
-          }
-        }
-        const trailing = template.staticSegments.at(-1);
-        ensureLength(trailing.length);
-        output.push(...trailing);
-        continue;
-      }
-      let length;
-      let shape;
-
-      if (reuseShape) {
-        const templateDistance = reader.readGamma();
-        if (templateDistance < 1 || templateDistance > patchShapes.length) {
-          throw new Error("Invalid ln.kr structural grammar reference");
-        }
-        shape = patchShapes[patchShapes.length - templateDistance];
-        length = shape.length;
-      } else {
-        length = reader.readGamma() + MIN_PATCH - 1;
-      }
-
-      if (distance < 1 || distance > output.length || length > distance) {
-        throw new Error("Invalid ln.kr structural reference");
-      }
-      ensureLength(length);
-      const sourceStart = output.length - distance;
-      const block = output.slice(sourceStart, sourceStart + length);
-
-      if (!reuseShape) {
-        const runCount = reader.readGamma();
-        if (runCount < 1 || runCount > Math.min(MAX_PATCH_RUNS, length)) {
-          throw new Error("Invalid ln.kr structural residual count");
-        }
-        const runs = [];
-        let previousEnd = 0;
-        for (let run = 0; run < runCount; run ++) {
-          const start = previousEnd + reader.readGamma() - 1;
-          const runLength = reader.readGamma();
-          if (start < previousEnd || start + runLength > length) {
-            throw new Error("Invalid ln.kr structural residual range");
-          }
-          runs.push({ start, length: runLength });
-          previousEnd = start + runLength;
-        }
-        shape = { length, runs };
-        patchShapes.push(shape);
-      }
-
-      for (const run of shape.runs) {
-        for (let index = 0; index < run.length; index ++) {
-          block[run.start + index] = Number(reader.readFixed(8));
-        }
-      }
-      output.push(...block);
-      continue;
-    }
-
+  const appendRawRecord = () => {
     const rawLength = reader.readGamma();
     ensureLength(rawLength);
     for (let index = 0; index < rawLength; index ++) {
       output.push(Number(reader.readFixed(8)));
     }
+  };
+
+  const appendTemplateRecord = () => {
+    const templateIndex = reader.readGamma() - 1;
+    const template = templates[templateIndex];
+    if (!template) throw new Error(`Unknown ln.kr structural template: ${templateIndex}`);
+    for (let hole = 0; hole < template.holeCount; hole ++) {
+      const staticSegment = template.staticSegments[hole];
+      ensureLength(staticSegment.length);
+      output.push(...staticSegment);
+      const holeLength = reader.readGamma() - 1;
+      ensureLength(holeLength);
+      for (let index = 0; index < holeLength; index ++) {
+        output.push(Number(reader.readFixed(8)));
+      }
+    }
+    const trailing = template.staticSegments.at(-1);
+    ensureLength(trailing.length);
+    output.push(...trailing);
+  };
+
+  const appendPatchRecord = (reuseShape, distance) => {
+    let length;
+    let shape;
+
+    if (reuseShape) {
+      const templateDistance = reader.readGamma();
+      if (templateDistance < 1 || templateDistance > patchShapes.length) {
+        throw new Error("Invalid ln.kr structural grammar reference");
+      }
+      shape = patchShapes[patchShapes.length - templateDistance];
+      length = shape.length;
+    } else {
+      length = reader.readGamma() + MIN_PATCH - 1;
+    }
+
+    if (distance < 1 || distance > output.length || length > distance) {
+      throw new Error("Invalid ln.kr structural reference");
+    }
+    ensureLength(length);
+    const sourceStart = output.length - distance;
+    const block = output.slice(sourceStart, sourceStart + length);
+
+    if (!reuseShape) {
+      const runCount = reader.readGamma();
+      if (runCount < 1 || runCount > Math.min(MAX_PATCH_RUNS, length)) {
+        throw new Error("Invalid ln.kr structural residual count");
+      }
+      const runs = [];
+      let previousEnd = 0;
+      for (let run = 0; run < runCount; run ++) {
+        const start = previousEnd + reader.readGamma() - 1;
+        const runLength = reader.readGamma();
+        if (start < previousEnd || start + runLength > length) {
+          throw new Error("Invalid ln.kr structural residual range");
+        }
+        runs.push({ start, length: runLength });
+        previousEnd = start + runLength;
+      }
+      shape = { length, runs };
+      patchShapes.push(shape);
+    }
+
+    for (const run of shape.runs) {
+      for (let index = 0; index < run.length; index ++) {
+        block[run.start + index] = Number(reader.readFixed(8));
+      }
+    }
+    output.push(...block);
+  };
+
+  while (output.length < expectedLength) {
+    if (reader.readBit() === 0) {
+      appendAsciiRecord();
+      continue;
+    }
+
+    if (reader.readBit() === 0) {
+      appendDictionaryRecord();
+      continue;
+    }
+
+    if (reader.readBit() === 0) {
+      appendCopyRecord();
+      continue;
+    }
+
+    if (version === STRUCTURED_VERSION || version === DICTIONARY_VERSION) {
+      if (reader.readBit() === 0) {
+        appendLexemeRecord(version === DICTIONARY_VERSION
+          ? readV3LexemeIndex()
+          : reader.readGamma() - 1);
+        continue;
+      }
+
+      if (reader.readBit() === 0) {
+        appendRawRecord();
+        continue;
+      }
+
+      const reuseShape = reader.readBit() === 1;
+      const distance = reader.readGamma();
+      if (reuseShape && distance === 1) {
+        appendTemplateRecord();
+        continue;
+      }
+      appendPatchRecord(reuseShape, distance);
+      continue;
+    }
+
+    appendRawRecord();
   }
 
   if (reader.number !== 1n) throw new Error("ln.kr payload has trailing data");

@@ -16,7 +16,7 @@ Fields are consumed least-significant bit first:
 | Field | Encoding |
 |---|---|
 | Magic | 16-bit `0x4c4e` |
-| Version | 3-bit integer (`1` or `2`) |
+| Version | 3-bit integer (`1`, `2`, or `3`) |
 | Display kind | 2-bit integer: text, Markdown, JavaScript, HTML |
 | Byte length | Elias-gamma of `length + 1` |
 | Integrity | CRC-32 of the exact UTF-8 bytes |
@@ -163,7 +163,7 @@ and count-header cost. Since removing one definition can expose or hide a later
 prior-output match, the monotonic cleanup fixed points are compared by their
 actual serialized v2 bit cost; a merely predicted local saving cannot force a
 larger v2 stream. This never invokes v1 as a competing whole-document encoder.
-The user selects v1 or v2 explicitly, and the default path never plans both
+The user selects v1, v2, or v3 explicitly, and no path plans multiple complete
 formats. v2 data can form a lossless chain
 
 ```text
@@ -173,6 +173,45 @@ B0 ──Δ1──> B1 ──Δ2──> B2 ──Δ3──> ... ──Δn──>
 where every reconstructed generation is eligible as a later reference. This
 is the `n=1, n=2, n=3, ...` behavior without assigning meaning to JSON, CSS,
 JavaScript, Markdown, or any other language.
+
+## v3 bounded document dictionary
+
+v3 retains v2's structural templates, sparse residual records, reusable
+residual shapes, static dictionary, raw literals, and prior-output copies.
+The `1110` record changes from a gamma-coded v2 lexeme index to a canonical
+v3 document-dictionary code. Every other body prefix keeps its v2 meaning.
+
+Structure discovery runs before dictionary discovery. The second phase scans
+the remaining immutable source through the same generic structural zones and
+nominates exact:
+
+- Unicode word, number, and identifier runs;
+- repeated multi-byte punctuation atoms; and
+- sequences of 2–32 compatible-zone units, up to 512 UTF-8 bytes.
+
+An entry must occur at least twice and must save more bits than its complete
+definition and reference cost. The bounded fixed-point pass removes entries
+that lose their uses to a copy, template, or sparse residual. The final table
+is byte-sorted for deterministic definition compression and may contain at
+most 7,225 entries.
+
+The v3 lexical header is:
+
+1. Elias-gamma of `entry count + 1`;
+2. one Elias-gamma byte length for each entry;
+3. one 4-bit canonical-code length for each entry; and
+4. all exact entry bytes concatenated and encoded as a v1 record stream.
+
+Entry lengths are 2–512 bytes. Canonical codes are frequency-shaped from the
+actual emitted token stream, prefix-free, and limited to 13 bits. The decoder
+reconstructs the code table from lengths plus stable entry order; no frequency
+table is needed. Invalid lengths, an over-subscribed code tree, unknown codes,
+more than 7,225 entries, or an out-of-range definition fail closed.
+
+The 13-bit limit bounds a dictionary identifier independently of the selected
+transport alphabet. URL characters are a packed representation of the entire
+bitstream, so record boundaries do not generally align with individual ASCII
+or emoji symbols.
 
 ## Emoji boundary framing
 
