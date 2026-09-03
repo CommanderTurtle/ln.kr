@@ -10,7 +10,10 @@ const routePrefixes = Object.freeze([
   ["sj:", "source-javascript"],
   ["sh:", "source-html"],
   ["hs:", "source-live"],
+  ["media:", "media"],
+  ["pdf:", "pdf"],
   ["lr:", "resolved"],
+  ["lf:", "framed"],
   ["i:", "image"],
   ["s:", "source"],
   ["l:", "guarded"]
@@ -20,6 +23,9 @@ const imageSuffixes = new Set([
   "apng", "avif", "bmp", "cur", "gif", "heic", "heif", "ico", "jfif",
   "jpeg", "jpg", "jxl", "pjp", "pjpeg", "png", "svg", "tif", "tiff", "webp"
 ]);
+
+const videoSuffixes = new Set(["m4v", "mov", "mp4", "ogv", "webm"]);
+const audioSuffixes = new Set(["aac", "flac", "m4a", "mp3", "oga", "ogg", "opus", "wav"]);
 
 export function splitLinkFragment (fragment) {
   for (const [prefix, mode] of routePrefixes) {
@@ -35,7 +41,10 @@ export function linkPrefixForMode (mode) {
   if (mode === "source-javascript") return "sj:";
   if (mode === "source-html") return "sh:";
   if (mode === "source-live") return "hs:";
+  if (mode === "media") return "media:";
+  if (mode === "pdf") return "pdf:";
   if (mode === "resolved") return "lr:";
+  if (mode === "framed") return "lf:";
   if (mode === "image") return "i:";
   if (mode === "source") return "s:";
   if (mode === "guarded") return "l:";
@@ -235,9 +244,86 @@ export function anchorResolvedHTML (source, target) {
 }
 
 export function isImageLinkTarget (target) {
-  const pathname = new URL(validateLinkTarget(target, { inferProtocol: false })).pathname;
-  const match = pathname.match(/\.([a-z0-9]+)$/i);
-  return Boolean(match && imageSuffixes.has(match[1].toLowerCase()));
+  return mediaLinkKind(target) === "image";
+}
+
+export function isPdfLinkTarget (target) {
+  return mediaLinkKind(target) === "pdf";
+}
+
+export function mediaLinkKind (target, contentType = "") {
+  const mediaType = normalizedMediaType(contentType);
+  if (mediaType.startsWith("image/")) return "image";
+  if (mediaType.startsWith("video/")) return "video";
+  if (mediaType.startsWith("audio/")) return "audio";
+  if (mediaType === "application/pdf") return "pdf";
+
+  const suffix = targetSuffix(target);
+  if (imageSuffixes.has(suffix)) return "image";
+  if (videoSuffixes.has(suffix)) return "video";
+  if (audioSuffixes.has(suffix)) return "audio";
+  if (suffix === "pdf") return "pdf";
+  return "";
+}
+
+function urlWithSourceLocation (origin, pathname, input) {
+  const source = new URL(input);
+  const output = new URL(pathname, origin);
+  output.search = source.search;
+  return output.href;
+}
+
+/**
+ * Convert repository presentation URLs into their public file endpoints.
+ * This stays entirely in-browser: it only selects a URL whose response is
+ * already readable by a cross-origin fetch. Existing raw/CDN URLs are kept
+ * untouched.
+ */
+export function sourceResourceURL (input) {
+  const target = validateLinkTarget(input, { inferProtocol: false });
+  const url = new URL(target);
+  const hostname = url.hostname.toLowerCase();
+
+  if (hostname === "github.com" || hostname === "www.github.com") {
+    const file = url.pathname.match(/^\/([^/]+)\/([^/]+)\/(?:blob|raw)\/(.+)$/);
+    if (file) {
+      return urlWithSourceLocation(
+        "https://raw.githubusercontent.com/",
+        `/${file[1]}/${file[2]}/${file[3]}`,
+        target
+      );
+    }
+
+    const repository = url.pathname.match(/^\/([^/]+)\/([^/]+)\/?$/);
+    if (repository) {
+      return urlWithSourceLocation(
+        "https://raw.githubusercontent.com/",
+        `/${repository[1]}/${repository[2]}/HEAD/README.md`,
+        target
+      );
+    }
+  }
+
+  if (hostname === "huggingface.co" || hostname === "www.huggingface.co") {
+    if (/\/(?:blob|raw)\//.test(url.pathname)) {
+      const pathname = url.pathname.replace(/\/(?:blob|raw)\//, "/resolve/");
+      return urlWithSourceLocation("https://huggingface.co/", pathname, target);
+    }
+
+    const repository = url.pathname.match(
+      /^\/(?:(datasets|spaces)\/)?([^/]+)\/([^/]+)\/?$/
+    );
+    if (repository) {
+      const namespace = repository[1] ? `/${repository[1]}` : "";
+      return urlWithSourceLocation(
+        "https://huggingface.co/",
+        `${namespace}/${repository[2]}/${repository[3]}/resolve/main/README.md`,
+        target
+      );
+    }
+  }
+
+  return target;
 }
 
 export function encodeLinkTarget (input, alphabet = outputAlphabetASCII) {

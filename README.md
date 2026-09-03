@@ -162,19 +162,25 @@ document.
 ## Link mode
 
 The **Link** control restores ha.mr’s original URL-specialized codec without
-changing that engine. It produces five deliberately different transports:
+changing that engine. It produces six route families:
 
 - **Copy link** uses `#l:` and shows the destination before navigation.
-- **Copy direct** uses `#lr:` and loads the decoded destination immediately in
-  the resolved viewer. It remains a client-side fragment route and never
-  invents a path or hostname.
+- **Copy direct** uses `#lr:` and replaces the current page with the decoded
+  destination immediately. It is exactly the guarded route without the
+  **Proceed** step, remains client-side, and invents no path or hostname.
 - **Copy source** uses `#s:`. On opening, the browser reads the target through
   the decoded public URL, detects HTML, Markdown, JavaScript, or ordinary text
   from its response type, final suffix, and contents, then replaces the short
   route with the corresponding ordinary editable `#PAYLOAD` document URL.
   Only HTML gets the upstream `<base>` anchor; a raw README or script stays
-  raw. The adjacent **Source as** selector defaults to that automatic detection
-  and can instead emit the explicit Markdown, JavaScript, or HTML route.
+  raw. GitHub repository, `/blob/`, and `/raw/` presentation URLs are resolved
+  to `raw.githubusercontent.com`; Hugging Face model-card, `/blob/`, and `/raw/`
+  URLs are resolved to their official `/resolve/` files. Those URL selections
+  occur entirely in the browser before the existing source fetch. The adjacent
+  **Source as** selector defaults to automatic detection and can instead emit
+  the explicit Markdown, JavaScript, or HTML route. A source fetch that the
+  origin does not permit remains an explicit error and never degrades into the
+  direct route.
 - Explicit `#sm:`, `#sj:`, and `#sh:` source aliases force Markdown,
   JavaScript, or HTML when a server supplies ambiguous metadata.
 - A bare `#s:`/`#sm:`/`#sj:`/`#sh:` link on its own source line is a runtime
@@ -182,8 +188,10 @@ changing that engine. It produces five deliberately different transports:
   Markdown/HTML preview or JavaScript runner receives the document, so CSS,
   scripts, and Markdown sections can remain modular. Source, Copy raw, and
   Edit a copy still expose the exact authored link rather than the expansion.
-  Includes may nest; repeated targets are fetched once. Inline links and
-  `#lr:` links are never treated as includes.
+  Includes may nest; repeated targets are fetched once. The rendered module
+  retains a compact source capsule; hover or focus it to inspect the expanded,
+  scrollable code. Inline links are not modules. A `#lr:` link remains literal
+  in authored source and is resolved only in the private runtime copy.
 - Append `::~START[:SPAN]` to a source link to select raw, zero-based lines
   before rendering or nested-module expansion. This follows CMD substring
   semantics: `::~0:5` takes the first five lines, `::~12` takes line 12 through
@@ -192,20 +200,46 @@ changing that engine. It produces five deliberately different transports:
   endings are preserved byte-for-byte; different slices of one target still
   share its single fetch.
 - **Copy live** uses the existing `#hs:` route and the same detection. HTML and
-  Markdown continue into their existing `#h:`/`#m:` expanded viewers;
-  JavaScript opens in its existing editable viewer with the run controls.
-- Binary responses are left on **Copy direct** instead of being decoded as
-  UTF-8. This preserves the browser's native PDF/media handling and range
-  requests.
+  Markdown continue into their existing `#h:`/`#m:` expanded viewers with
+  network access enabled. JavaScript continues into its existing `#r:`
+  editable parent-scope run state.
+- **Copy in-frame** uses `#lf:` and loads the decoded destination in the
+  inspectable frame without changing the top-level page. It exposes manual
+  **Copy source**, **Download**, and **Expand frame** controls. Copy serializes
+  a same-origin frame or uses a readable text response; Download preserves the
+  fetched bytes and MIME type. Sites may still decline framing or cross-origin
+  reads through their own response headers; that never changes source routes.
 - **Copy image** appears only for a recognized image suffix. `#i:` expands the
   target into the project’s complete editable JavaScript image viewer, shows
-  that exact source in the normal viewer, and runs it in parent scope.
+  that exact source in the normal viewer, and runs it in parent scope. Its
+  source keeps the compressed `#lr:` URL; a.shel.sh replaces that reference
+  only in the private runtime copy before the image element loads it.
+- **Copy media** appears only for recognized audio and video suffixes.
+  `#media:` expands to an editable, immediately live JavaScript player whose
+  `src` is likewise the route-two `#lr:` form in visible source.
+- **Copy PDF** appears only for a `.pdf` suffix. `#pdf:` expands to an editable
+  JavaScript PDF viewer with the same embedded `#lr:` resolution. It fetches
+  exact bytes, gives the resulting local Blob the correct `application/pdf`
+  type, and supplies previous/next/page controls plus Single and Book layouts
+  over the browser-native PDF viewer.
 
-`#lr:` remains the inspectable framed wrapper for a compressed destination.
-It decodes entirely in the browser. Image aliases load the decoded image URL
-directly and source routes fetch CORS-readable public text directly; runtime
-inclusion remains reserved for textual Markdown, JavaScript, CSS, HTML, and
-similar source files.
+A bare route-three or route-four link is also a valid module when it points to
+recognized image, audio, video, or PDF bytes. Markdown and HTML receive the
+corresponding native element at that exact line. Bare `#i:`, `#media:`, and
+`#pdf:` route-six links do the same. Generated media `src` attributes use the
+short route-two URL; only the private runtime representation substitutes the
+decoded public resource. Animated images remain ordinary `<img>` elements,
+and PDF modules fetch into an `application/pdf` Blob before opening their
+native frame.
+
+`#lr:` remains the no-confirmation redirect for a compressed destination.
+When opened in the URL bar, `#lr:` immediately replaces the page with its
+destination. Inside an a.shel.sh document, the authored code stays short while
+the renderer/executor resolves `#lr:` references in a separate runtime copy.
+A bare external `<img>` request cannot execute a fragment application; this
+special behavior belongs to source rendered by a.shel.sh. Source routes fetch
+CORS-readable public text directly. Runtime inclusion remains reserved for
+textual Markdown, JavaScript, CSS, HTML, and similar source files.
 
 ## Run locally
 
@@ -249,9 +283,10 @@ custom domain in `docs/CNAME`:
 a.shel.sh
 ```
 
-The deployment is entirely static. `#l:`, `#lr:`, `#s:`, `#sm:`, `#sj:`,
-`#sh:`, `#hs:`, and `#i:` are URL-fragment routes handled by the browser; no
-matching server directories or rewrite rules exist.
+The deployment is entirely static. `#l:`, `#lr:`, `#lf:`, `#s:`, `#sm:`,
+`#sj:`, `#sh:`, `#hs:`, `#i:`, `#media:`, and `#pdf:` are URL-fragment routes
+handled by the browser; no matching server directories or rewrite rules
+exist.
 
 The Docker image serves the same directory with Nginx and sends unknown QR
 paths through `404.html`.
@@ -273,7 +308,8 @@ The suite covers:
 - explicit v4 DEFLATE round trips through every content kind and transport alphabet;
 - payload corruption rejection;
 - viewer URL-mode contracts;
-- fragment-only guarded, direct, source, live-source, sliced-module, and image routes;
+- fragment-only guarded, direct, source, live-source, framed, sliced-module,
+  image, audio/video, and PDF routes;
 - vendored renderer assets and license copies;
 - vendored JSFuck alphabet and execution.
 
