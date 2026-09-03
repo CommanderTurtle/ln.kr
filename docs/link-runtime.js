@@ -1,7 +1,6 @@
 import {
   outputAlphabetASCII,
   outputAlphabetEmoji,
-  outputAlphabetPath,
   outputAlphabetQR
 } from "./alphabets.js";
 import { compress, decompress } from "./compress.js";
@@ -99,7 +98,7 @@ export function sourceKindHint (target, contentType = "") {
   return sourceTypeKinds[mediaType] || sourceSuffixKinds[targetSuffix(target)] || "";
 }
 
-/** Binary responses stay on the byte resolver instead of being decoded as UTF-8 source. */
+/** Keep binary responses in the browser's native resource viewer. */
 export function isTextualSourceResponse (target, contentType = "") {
   const mediaType = normalizedMediaType(contentType);
   if (sourceKindHint(target, contentType)) return true;
@@ -249,8 +248,9 @@ export function encodeLinkTarget (input, alphabet = outputAlphabetASCII) {
   return { payload, target };
 }
 
-export function encodeDirectLinkTarget (input) {
-  return encodeLinkTarget(input, outputAlphabetPath);
+/** Resolve a fragment payload to its original public resource without paths. */
+export function resolvedResourceURL (input) {
+  return validateLinkTarget(input, { inferProtocol: false });
 }
 
 function decodeCandidates (raw) {
@@ -292,8 +292,4 @@ export function decodeLinkTarget (raw, alphabetHint = null) {
 
 export function decodeQRLinkTarget (raw) {
   return decodeLinkTarget(raw, outputAlphabetQR);
-}
-
-export function decodeDirectLinkTarget (raw) {
-  return decodeLinkTarget(raw, outputAlphabetPath);
 }
