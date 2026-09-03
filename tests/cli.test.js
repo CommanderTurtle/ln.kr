@@ -81,3 +81,27 @@ test("standalone CLI exposes the v3 document dictionary", async () => {
   expect(await new Response(decodedProcess.stdout).text()).toBe(source);
   expect(await decodedProcess.exited).toBe(0);
 });
+
+test("standalone CLI exposes explicit v4 DEFLATE", async () => {
+  const source = "high entropy vocabulary ".repeat(128) + "🐢";
+  const encodedProcess = Bun.spawn([
+    process.execPath,
+    "standalone.js",
+    "encode",
+    source,
+    "ascii",
+    "text",
+    "v4"
+  ], { cwd: projectRoot });
+  const link = (await new Response(encodedProcess.stdout).text()).trim();
+  expect(await encodedProcess.exited).toBe(0);
+
+  const decodedProcess = Bun.spawn([
+    process.execPath,
+    "standalone.js",
+    "decode",
+    link
+  ], { cwd: projectRoot });
+  expect(await new Response(decodedProcess.stdout).text()).toBe(source);
+  expect(await decodedProcess.exited).toBe(0);
+});

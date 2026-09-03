@@ -13,6 +13,7 @@ import {
   compressTextV1,
   compressTextV2,
   compressTextV3,
+  compressTextV4,
   decompressText,
   detectKind,
   textDictionary
@@ -50,6 +51,14 @@ describe("ln.kr exact text codec", () => {
     expect(compressTextV2(source, outputAlphabetASCII, "markdown").payload).toBe(
       "_P@~N=(y~Hnedre0y96~d8h7sG$Rptfx;@HHky~?qJaOWcs/V,p,sUDQv.&Zu!l'LJQwMLQM+'kF4jS.uo'+AtLZ[6d3!9EM!s#"
     );
+  });
+
+  test("pins the explicit v4 DEFLATE wire stream", () => {
+    expect(compressTextV4(
+      "const answer = 42;",
+      outputAlphabetASCII,
+      "javascript"
+    ).payload).toBe("=Py520'lmk3d$kit*b?8:g7;bMVN@Oh2Hu:W!@g8tl~E");
   });
 
   for (const alphabet of [outputAlphabetASCII, outputAlphabetEmoji, outputAlphabetQR]) {
@@ -200,6 +209,56 @@ describe("ln.kr exact text codec", () => {
       expect(encoded.stats.patch + encoded.stats.template).toBeGreaterThan(0);
       expect(decompressText(encoded.payload, alphabet).text).toBe(source);
     }
+  });
+
+  test("round trips explicit v4 DEFLATE through every transport and content kind", () => {
+    const inputs = [
+      ["", "text"],
+      ["Exact spaces  \r\n\ttabs and Unicode 你好 🐢\n", "text"],
+      ["# Markdown\n\n```js\nconst answer = 42;\n```\n", "markdown"],
+      ["const answer = () => ({ exact: true });\n", "javascript"],
+      ["<!doctype html><title>Exact</title><p>🐢</p>", "html"]
+    ];
+
+    for (const alphabet of [outputAlphabetASCII, outputAlphabetEmoji, outputAlphabetQR]) {
+      for (const [source, kind] of inputs) {
+        const encoded = compressTextV4(source, alphabet, kind);
+        const decoded = decompressText(encoded.payload, alphabet);
+        expect(encoded.stats.version).toBe(4);
+        expect(encoded.stats.compressedBytes).toBeGreaterThan(0);
+        expect(decoded).toEqual({ text: source, kind, version: 4 });
+      }
+    }
+  });
+
+  test("lets v4 DEFLATE win explicitly on high-entropy document vocabularies", () => {
+    let state = 0x4def1a7e;
+    const word = () => Array.from({ length: 12 }, () => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return String.fromCharCode(97 + state % 26);
+    }).join("");
+    const vocabulary = Array.from({ length: 1200 }, word);
+    const source = Array.from({ length: 5 }, (_, pass) =>
+      vocabulary.map((value, index) => `${value}-${(index + pass * 337) % 1200}`).join(" ")
+    ).join("\n");
+    const v3 = compressTextV3(source, outputAlphabetASCII, "text");
+    const v4 = compressTextV4(source, outputAlphabetASCII, "text");
+
+    expect(v4.payload.length).toBeLessThan(v3.payload.length);
+    expect(decompressText(v4.payload, outputAlphabetASCII).text).toBe(source);
+  });
+
+  test("rejects damaged or truncated v4 DEFLATE payloads", () => {
+    const encoded = compressTextV4(
+      "exact payload integrity 🐢".repeat(40),
+      outputAlphabetASCII,
+      "text"
+    ).payload;
+    const first = outputAlphabetASCII.indexOf(encoded[0]);
+    const mutated = outputAlphabetASCII[(first + 1) % outputAlphabetASCII.length] + encoded.slice(1);
+
+    expect(() => decompressText(mutated, outputAlphabetASCII)).toThrow();
+    expect(() => decompressText(encoded.slice(0, -1), outputAlphabetASCII)).toThrow();
   });
 
   test("maps code sectors and remaining line families through exact templates", () => {
