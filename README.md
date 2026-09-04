@@ -162,6 +162,11 @@ permalinks; images receive the compact full-screen lightbox unless marked
 Mermaid stays locally vendored. MathJax 3.2.2 loads only when Arithmatex is
 present, and readable TeX remains if that optional network load is unavailable.
 
+Heading icons, TOC/footnote links, and Markdown bookmarks such as
+`[my link text](#the-cordis-research-paper)` jump within the preview using
+JavaScript, including the expanded viewer. Their appearance and authored source
+stay unchanged; clicking never replaces the compressed URL fragment.
+
 Absolute Zensical snippet syntax is routed through the same source-module
 engine: `--8<-- "https://a.shel.sh/#s:…"`. A pasted fragment has no build-time
 filesystem, so relative snippet filenames cannot be read; an ln.kr source link
