@@ -7,6 +7,7 @@ import {
   anchorResolvedHTML,
   decodeLinkTarget,
   encodeLinkTarget,
+  extractSingleLinkDocument,
   isPdfLinkTarget,
   isTextualSourceResponse,
   linkPrefixForMode,
@@ -19,7 +20,8 @@ import {
 } from "../docs/link-runtime.js";
 
 describe("link routes", () => {
-  test("uses explicit headers for all six link-route families", () => {
+  test("uses explicit headers for every link-route family", () => {
+    expect(splitLinkFragment("ss:payload")).toEqual({ mode: "super-source", payload: "payload" });
     expect(splitLinkFragment("l:payload")).toEqual({ mode: "guarded", payload: "payload" });
     expect(splitLinkFragment("lr:payload")).toEqual({ mode: "resolved", payload: "payload" });
     expect(splitLinkFragment("lf:payload")).toEqual({ mode: "framed", payload: "payload" });
@@ -33,6 +35,7 @@ describe("link routes", () => {
     expect(splitLinkFragment("hs:payload")).toEqual({ mode: "source-live", payload: "payload" });
     expect(splitLinkFragment("payload")).toEqual({ mode: "", payload: "payload" });
     expect(linkPrefixForMode("guarded")).toBe("l:");
+    expect(linkPrefixForMode("super-source")).toBe("ss:");
     expect(linkPrefixForMode("resolved")).toBe("lr:");
     expect(linkPrefixForMode("framed")).toBe("lf:");
     expect(linkPrefixForMode("image")).toBe("i:");
@@ -76,6 +79,16 @@ describe("link routes", () => {
   test("never invents a physical resolver path or hostname", () => {
     const target = "https://images.example.com/source.webp?size=full";
     expect(resolvedResourceURL(target)).toBe(target);
+  });
+
+  test("accepts only exact one-line superlink documents", () => {
+    const target = "https://a.shel.sh/#sm:large-payload?still-part-of-fragment";
+    expect(extractSingleLinkDocument(target)).toBe(target);
+    expect(extractSingleLinkDocument(`<a class="large" href="${target.replace("&", "&amp;")}">paper</a>`))
+      .toBe(target);
+    expect(extractSingleLinkDocument(`[paper](${target})`)).toBe(target);
+    expect(extractSingleLinkDocument(`${target}\nsecond line`)).toBe("");
+    expect(extractSingleLinkDocument(`<p>${target}</p>`)).toBe("");
   });
 
   test("selects official repository file endpoints entirely in-browser", () => {
@@ -210,6 +223,7 @@ test("source routes detect text kinds, anchor only HTML, and reuse existing view
   expect(source).toContain('id="copy-source-link"');
   expect(source).toContain('id="copy-live-source-link"');
   expect(source).toContain('id="copy-framed-link"');
+  expect(source).toContain('id="copy-super-link"');
   expect(source).toContain('id="link-source-format"');
   expect(source).toContain('currentSourceLink = outputLinkURL(encoded.payload, selectedSourceMode())');
   expect(source).toContain("window.location.replace(resourceURLForTarget(target))");

@@ -1,6 +1,7 @@
 import {
   decodeLinkTarget,
   encodeLinkTarget,
+  extractSingleLinkDocument,
   isTextualSourceResponse,
   mediaLinkKind,
   splitLinkFragment
@@ -16,6 +17,7 @@ const slicedSourceModes = new Set([
 
 const moduleModes = new Set([
   ...slicedSourceModes,
+  "super-source",
   "image",
   "media",
   "pdf"
@@ -58,7 +60,10 @@ function splitSourceLineSlice (value) {
 }
 
 function sourceLinkFromLine (line, appURL) {
-  const match = String(line).match(/^(\s*)(\S+?)(\r\n|\n|\r)?$/);
+  const text = String(line);
+  const direct = text.match(/^(\s*)(\S+?)(\r\n|\n|\r)?$/);
+  const snippet = text.match(/^(\s*)--8<--\s+(["'])(https?:\/\/.*?)\2\s*(\r\n|\n|\r)?$/);
+  const match = direct || (snippet && [snippet[0], snippet[1], snippet[3], snippet[4]]);
   if (!match) return null;
 
   let url;
@@ -207,7 +212,7 @@ function includeMediaKind (include, contentType = "", sourceURL = include.target
 
 function modulePeek (include, source, language = "html") {
   return `<aside class="lnkr-module-source" tabindex="0">
-<code class="lnkr-module-token">${escapeHTML(include.href)}</code>
+<a class="lnkr-module-token" href="${escapeHTML(include.href)}" target="_blank" rel="noopener noreferrer">${escapeHTML(include.href)}</a>
 <pre><code class="language-${escapeHTML(language)}">${escapeHTML(source)}</code></pre>
 </aside>`;
 }
@@ -348,6 +353,36 @@ export async function expandSourceIncludes (source, {
 
       const nestedAncestors = new Set(ancestors);
       nestedAncestors.add(include.key);
+      if (include.mode === "super-source") {
+        const outer = await fetchSource(include.target);
+        const innerHref = extractSingleLinkDocument(outer.text);
+        const inner = innerHref && sourceLinkFromLine(innerHref, appURL);
+        if (!inner || !slicedSourceModes.has(inner.mode)) {
+          throw new Error("A superlink must contain exactly one route-three or route-four source link");
+        }
+        if (nestedAncestors.has(inner.key)) {
+          throw new Error(`Circular source include: ${inner.target}`);
+        }
+        state.modules ++;
+        if (state.modules > limits.modules) {
+          throw new Error(`Source includes exceed the ${limits.modules}-module limit`);
+        }
+        nestedAncestors.add(inner.key);
+        const record = await fetchSource(inner.target);
+        if (includeMediaKind(inner, record.contentType, record.sourceURL)) {
+          throw new Error("A superlink source route must resolve to textual source");
+        }
+        const imported = applySourceLineSlice(record.text, inner.lineSlice);
+        let replacement = await expand(imported, depth + 2, nestedAncestors);
+        if (showModuleSource && documentKind === "markdown") {
+          const spacer = replacement && !/(?:\r\n|\n|\r)$/.test(replacement) ? "\n" : "";
+          replacement += `${spacer}${modulePeek(include, imported, "text")}\n`;
+        }
+        replacement = indentSource(replacement, include.indent);
+        if (include.ending && !/(?:\r\n|\n|\r)$/.test(replacement)) replacement += include.ending;
+        output.push(replacement);
+        continue;
+      }
       const declaredMedia = includeMediaKind(include);
       if (declaredMedia) {
         if (!["markdown", "html"].includes(documentKind)) {
