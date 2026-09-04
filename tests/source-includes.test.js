@@ -254,6 +254,38 @@ describe("source includes", () => {
     await expect(expandSourceIncludes(sourceLink(binary), harness.options))
       .rejects.toThrow("A pdf module requires a Markdown or HTML document");
   });
+
+  test("double-resolves a superlink into its route-three source module", async () => {
+    const pointer = "https://raw.example.test/one-line-link.html";
+    const module = "https://raw.example.test/large-paper.md";
+    const inner = sourceLink(module, "sm:");
+    const sources = new Map([
+      [pointer, { body: `<a href="${inner}">large document</a>`, type: "text/html" }],
+      [module, { body: "# Expanded only at runtime\n\nExact source.\n", type: "text/markdown" }]
+    ]);
+    const harness = sourceHarness(sources, {
+      documentKind: "markdown",
+      showModuleSource: true
+    });
+    const authored = sourceLink(pointer, "ss:");
+    const expanded = await expandSourceIncludes(authored, harness.options);
+
+    expect(expanded.text).toContain("# Expanded only at runtime");
+    expect(expanded.text).toContain("lnkr-module-source");
+    expect(expanded.text).toContain(`href="${authored}`);
+    expect(expanded.modules).toBe(2);
+    expect(harness.fetches).toBe(2);
+  });
+
+  test("accepts the enabled snippets spelling for absolute source modules", async () => {
+    const target = "https://raw.example.test/snippet.md";
+    const link = sourceLink(target, "sm:");
+    const harness = sourceHarness(new Map([
+      [target, { body: "snippet body\n", type: "text/markdown" }]
+    ]));
+    const expanded = await expandSourceIncludes(`--8<-- "${link}"\n`, harness.options);
+    expect(expanded.text).toBe("snippet body\n");
+  });
 });
 
 test("the existing preview and runners use expansions while source actions stay exact", async () => {

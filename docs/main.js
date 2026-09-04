@@ -8,6 +8,7 @@ import {
   anchorResolvedHTML,
   decodeLinkTarget,
   encodeLinkTarget,
+  extractSingleLinkDocument,
   isTextualSourceResponse,
   isImageLinkTarget,
   isPdfLinkTarget,
@@ -20,7 +21,7 @@ import {
 } from "./link-runtime.js";
 import { decodeDocumentPayload } from "./payload.js";
 import { compressTextV1, compressTextV2, compressTextV3, compressTextV4, detectKind } from "./text-compress.js";
-import { renderContent } from "./render.js";
+import { renderContent, zensicalInteractionBootstrap } from "./render.js";
 import {
   applySourceLineSlice,
   expandResolvedResourceLinks,
@@ -49,6 +50,7 @@ const elements = {
   copySource: document.querySelector("#copy-source-link"),
   copyLiveSource: document.querySelector("#copy-live-source-link"),
   copyFramed: document.querySelector("#copy-framed-link"),
+  copySuper: document.querySelector("#copy-super-link"),
   copyImage: document.querySelector("#copy-image-link"),
   copyMedia: document.querySelector("#copy-media-link"),
   copyPdf: document.querySelector("#copy-pdf-link"),
@@ -128,6 +130,7 @@ let currentResolvedLink = "";
 let currentSourceLink = "";
 let currentLiveSourceLink = "";
 let currentFramedLink = "";
+let currentSuperLink = "";
 let currentImageLink = "";
 let currentMediaLink = "";
 let currentPdfLink = "";
@@ -141,6 +144,7 @@ let runToken = null;
 let currentRender = Promise.resolve();
 let renderGeneration = 0;
 let sourceResolveGeneration = 0;
+let superlinkProbeGeneration = 0;
 
 function rootURL () {
   const url = new URL(window.location.href);
@@ -443,7 +447,24 @@ async function generateLink () {
   }
 }
 
+async function probeSuperlink (target, payload, generation) {
+  try {
+    const response = await fetch(sourceURLForTarget(target), {
+      headers: { accept: "text/plain, text/html;q=0.9, */*;q=0.1" },
+      signal: AbortSignal.timeout(5000)
+    });
+    if (!response.ok || generation !== superlinkProbeGeneration) return;
+    const inner = extractSingleLinkDocument(await response.text());
+    if (!inner || generation !== superlinkProbeGeneration) return;
+    currentSuperLink = outputLinkURL(payload, "super-source");
+    elements.copySuper.hidden = false;
+  } catch {
+    // Superlink discovery is optional and never delays ordinary link creation.
+  }
+}
+
 async function generateURLLinks () {
+  const probeGeneration = ++superlinkProbeGeneration;
   const source = elements.linkInput.value;
   if (!source.trim()) {
     elements.urlResult.hidden = true;
@@ -463,6 +484,8 @@ async function generateURLLinks () {
     currentSourceLink = outputLinkURL(encoded.payload, selectedSourceMode());
     currentLiveSourceLink = outputLinkURL(encoded.payload, "source-live");
     currentFramedLink = outputLinkURL(encoded.payload, "framed");
+    currentSuperLink = "";
+    elements.copySuper.hidden = true;
     currentImageLink = outputLinkURL(encoded.payload, "image");
     currentMediaLink = outputLinkURL(encoded.payload, "media");
     currentPdfLink = outputLinkURL(encoded.payload, "pdf");
@@ -486,6 +509,7 @@ async function generateURLLinks () {
         : "Output is the same length as the input";
     elements.urlResult.hidden = false;
     await drawLinkQR(encoded.target);
+    void probeSuperlink(encoded.target, encoded.payload, probeGeneration);
   } catch (error) {
     elements.urlResult.hidden = true;
     showToast(error.message || String(error), "error");
@@ -508,6 +532,27 @@ function showGuardedLink (target) {
 
 function showResolvedLink (target) {
   window.location.replace(resourceURLForTarget(target));
+}
+
+async function showSuperLink (target, generation) {
+  hidePrimarySections();
+  setHeaderMode("link");
+  document.title = "ln.kr · resolving superlink";
+  showToast("Resolving superlink…");
+  try {
+    const response = await fetch(sourceURLForTarget(target), {
+      headers: { accept: "text/plain, text/html;q=0.9, */*;q=0.1" }
+    });
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`.trim());
+    const inner = extractSingleLinkDocument(await response.text());
+    if (!inner) throw new Error("The target is not an exact one-line link document");
+    if (generation !== sourceResolveGeneration) return;
+    window.location.replace(inner);
+  } catch (error) {
+    if (generation !== sourceResolveGeneration) return;
+    showToast(`Superlink could not be resolved: ${error.message || error}`, "error");
+    showComposerMode("link");
+  }
 }
 
 function setFramedExpanded (expanded) {
@@ -1064,6 +1109,7 @@ function decodeLocation () {
         }
         const { target } = decodeLinkTarget(fragment, alphabetHint);
         if (linkage.mode === "resolved") showResolvedLink(target);
+        else if (linkage.mode === "super-source") void showSuperLink(target, navigationGeneration);
         else if (linkage.mode === "framed") showFramedLink(target);
         else if (linkage.mode === "image") showImageAlias(target);
         else if (linkage.mode === "media") showMediaAlias(target);
@@ -1183,6 +1229,7 @@ function documentLinkBootstrap (token, copyCode = false) {
       for (const node of record.addedNodes) if (node.nodeType === Node.ELEMENT_NODE) harden(node);
     }
   }).observe(document.documentElement, { childList: true, subtree: true });
+  ${zensicalInteractionBootstrap()}
   ${copyCode ? `const copyText = async text => {
     try {
       await navigator.clipboard.writeText(text);
@@ -1202,6 +1249,17 @@ function documentLinkBootstrap (token, copyCode = false) {
     }
   };
   document.addEventListener("click", async event => {
+    const select = event.target.closest?.("[data-select-code]");
+    if (select) {
+      const code = select.closest(".code-block, .mermaid-block")?.querySelector("pre code");
+      if (code) {
+        const range = document.createRange(); range.selectNodeContents(code);
+        const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+        const original = select.textContent; select.textContent = "Selected";
+        setTimeout(() => { select.textContent = original; }, 1200);
+      }
+      return;
+    }
     const copy = event.target.closest?.("[data-copy-code]");
     if (copy) {
       const block = copy.closest(".code-block, .mermaid-block");
@@ -1408,6 +1466,14 @@ elements.copyFramed.addEventListener("click", async () => {
   try {
     await copyText(currentFramedLink);
     showToast("In-frame link copied");
+  } catch (error) {
+    showToast(error.message || String(error), "error");
+  }
+});
+elements.copySuper.addEventListener("click", async () => {
+  try {
+    await copyText(currentSuperLink);
+    showToast("Superlink copied");
   } catch (error) {
     showToast(error.message || String(error), "error");
   }

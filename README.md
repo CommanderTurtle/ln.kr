@@ -122,8 +122,9 @@ The generated page provides:
 
 - an explicit **v1 / v2 / v3** encoder dial, with stable v1 as the default, plus
   a separate **DEFLATE v4** high-entropy override;
-- a GFM preview with authored HTML blocks, Mermaid diagrams,
-  syntax highlighting, per-block copy actions, and an exact-source view;
+- a GFM preview with the render-facing Zensical extensions used by sHEL docs,
+  authored HTML blocks, Mermaid diagrams, syntax highlighting, per-block copy
+  actions, and an exact-source view;
 - **Copy raw** and **Copy rich**;
 - local **Copy JSFuck** and AEM1K-style **Copy invisible** exports for
   JavaScript;
@@ -140,6 +141,32 @@ Markdown is parsed as GFM without sanitizing or rewriting authored HTML. This
 preserves README/Obsidian constructs such as images, audio/video players,
 `details`/`summary`, custom schemes, attributes, and embedded markup. The exact
 source remains available through **Source** and **Copy raw**.
+
+### Zensical-compatible Markdown
+
+The viewer natively implements the complete 24-extension Markdown set enabled
+by `orc/docs/zensical.fs`: abbreviations, admonitions, attribute lists,
+definition lists, footnotes, Markdown inside marked HTML, Caret, collapsible
+Details, Snippets, InlineHilite, SmartSymbols, Mark, Tilde, Keys, Highlight,
+SuperFences, linked content Tabs, Emoji/icons, Arithmatex, MagicLink, custom
+Tasklists, BetterEm, GLightbox, and TOC permalinks. This is a compact browser
+renderer, not a generated Zensical site shell, so navigation/search/repository
+theme features do not become part of a shared document.
+
+Configured forms such as `!!! warning`, `???+ note`, `=== "Tab"`,
+`==mark==`, `^^insert^^`, `H~2~O`, `++ctrl+alt+del++`, footnotes, definition
+lists, `{ .md-button }`, `[TOC]`, and fence metadata (`title`, `linenums`, and
+`hl_lines`) render directly. Matching tab labels stay linked. Headings receive
+permalinks; images receive the compact full-screen lightbox unless marked
+`.off-glb`; code blocks receive copy/select actions and numbered annotations.
+Mermaid stays locally vendored. MathJax 3.2.2 loads only when Arithmatex is
+present, and readable TeX remains if that optional network load is unavailable.
+
+Absolute Zensical snippet syntax is routed through the same source-module
+engine: `--8<-- "https://a.shel.sh/#s:…"`. A pasted fragment has no build-time
+filesystem, so relative snippet filenames cannot be read; an ln.kr source link
+is the browser-native equivalent and retains nested expansion, line slicing,
+cycle checks, fetch reuse, and exact authored source.
 
 For ordinary rendered document links, ln.kr only fills in missing link-opening
 attributes: `target="_blank"` and the `noopener noreferrer` `rel` tokens.
@@ -162,7 +189,7 @@ document.
 ## Link mode
 
 The **Link** control restores ha.mr’s original URL-specialized codec without
-changing that engine. It produces six route families:
+changing that engine. It produces these fragment-only route families:
 
 - **Copy link** uses `#l:` and shows the destination before navigation.
 - **Copy direct** uses `#lr:` and replaces the current page with the decoded
@@ -209,6 +236,14 @@ changing that engine. It produces six route families:
   a same-origin frame or uses a readable text response; Download preserves the
   fetched bytes and MIME type. Sites may still decline framing or cross-origin
   reads through their own response headers; that never changes source routes.
+- **Copy superlink** appears only after the browser verifies that the selected
+  readable raw file is exactly one physical line containing one bare URL,
+  Markdown link, or HTML anchor. Its `#ss:` route keeps that small outer file
+  pointer in authored source. Opening it resolves the inner link; using it as
+  a bare source module double-resolves an inner route-three/route-four link and
+  appends that source through the existing runtime module engine. This lets a
+  tiny raw file carry an otherwise enormous a.shel.sh source link without
+  copying the expanded link into the parent document.
 - **Copy image** appears only for a recognized image suffix. `#i:` expands the
   target into the project’s complete editable JavaScript image viewer, shows
   that exact source in the normal viewer, and runs it in parent scope. Its
@@ -284,7 +319,7 @@ a.shel.sh
 ```
 
 The deployment is entirely static. `#l:`, `#lr:`, `#lf:`, `#s:`, `#sm:`,
-`#sj:`, `#sh:`, `#hs:`, `#i:`, `#media:`, and `#pdf:` are URL-fragment routes
+`#sj:`, `#sh:`, `#hs:`, `#ss:`, `#i:`, `#media:`, and `#pdf:` are URL-fragment routes
 handled by the browser; no matching server directories or rewrite rules
 exist.
 
@@ -309,7 +344,9 @@ The suite covers:
 - payload corruption rejection;
 - viewer URL-mode contracts;
 - fragment-only guarded, direct, source, live-source, framed, sliced-module,
-  image, audio/video, and PDF routes;
+  nested-superlink, image, audio/video, and PDF routes;
+- the exact Zensical extension inventory, block recognition, fence metadata,
+  linked-viewer bootstrap, and absolute Snippets spelling;
 - vendored renderer assets and license copies;
 - vendored JSFuck alphabet and execution.
 
