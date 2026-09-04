@@ -293,8 +293,9 @@ test("the existing preview and runners use expansions while source actions stay 
   expect(main).toContain("splitSourceLineSlice(linkage.payload)");
   expect(main).toContain("applySourceLineSlice(await response.text(), lineSlice)");
   expect(main).toContain("currentRuntimeSource = expandResolvedResourceLinks(expanded.text, { appURL })");
-  expect(main).toContain('const displaySource = ["markdown", "html"].includes(decoded.kind)');
-  expect(main).toContain("renderContent(elements.preview, displaySource, decoded.kind)");
+  expect(main).toContain('currentRuntimeKind = decoded.kind');
+  expect(main).toContain('const displaySource = ["markdown", "html"].includes(currentRuntimeKind)');
+  expect(main).toContain("renderContent(elements.preview, displaySource, currentRuntimeKind)");
   expect(main).toContain("elements.preview.textContent = decoded.text");
   expect(main).toContain("window.eval(currentRuntimeSource)");
   expect(main).toContain("JSON.stringify(currentRuntimeSource)");
