@@ -1,5 +1,11 @@
+import {
+  renderZensicalMarkdown,
+  zensicalInteractionBootstrap
+} from "./zensical.js";
+
 let mermaidLoad = null;
 let mermaidReady = false;
+let mathJaxLoad = null;
 
 function requireRenderer (name, value) {
   if (!value) throw new Error(`${name} did not load`);
@@ -40,7 +46,18 @@ async function copyCode (code, button) {
   window.setTimeout(() => { button.textContent = original; }, 1200);
 }
 
-function makeCodeToolbar (label, findCode) {
+function selectCode (code, button) {
+  const range = document.createRange();
+  range.selectNodeContents(code);
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  const original = button.textContent;
+  button.textContent = "Selected";
+  window.setTimeout(() => { button.textContent = original; }, 1200);
+}
+
+function makeCodeToolbar (label, findCode, selectable = false) {
   const toolbar = document.createElement("div");
   toolbar.className = "code-toolbar";
 
@@ -56,7 +73,21 @@ function makeCodeToolbar (label, findCode) {
     if (code) copyCode(code, copy);
   });
 
-  toolbar.append(language, copy);
+  const actions = document.createElement("span");
+  actions.className = "code-toolbar-actions";
+  if (selectable) {
+    const select = document.createElement("button");
+    select.type = "button";
+    select.dataset.selectCode = "";
+    select.textContent = "Select";
+    select.addEventListener("click", () => {
+      const code = findCode();
+      if (code) selectCode(code, select);
+    });
+    actions.append(select);
+  }
+  actions.append(copy);
+  toolbar.append(language, actions);
   return toolbar;
 }
 
@@ -81,18 +112,109 @@ function highlightCode (code, language) {
   }
 }
 
+function highlightedLine (source, language) {
+  const highlighter = requireRenderer("highlight.js", window.hljs);
+  try {
+    return language && highlighter.getLanguage(language)
+      ? highlighter.highlight(source, { language, ignoreIllegals: true }).value
+      : highlighter.highlightAuto(source).value;
+  } catch {
+    const span = document.createElement("span");
+    span.textContent = source;
+    return span.innerHTML;
+  }
+}
+
+function highlightedLines (code, language, metadata) {
+  const source = code.textContent || "";
+  const start = Number.parseInt(metadata.linenums, 10) || 1;
+  const selected = new Set();
+  for (const token of String(metadata.highlights || "").split(/\s+/).filter(Boolean)) {
+    const range = token.match(/^(\d+)-(\d+)$/);
+    if (range) {
+      for (let line = Number(range[1]); line <= Number(range[2]); line++) selected.add(line);
+    } else if (/^\d+$/.test(token)) selected.add(Number(token));
+  }
+
+  code.replaceChildren();
+  code.classList.add("hljs", "zensical-numbered-code");
+  const lines = source.endsWith("\n") ? source.slice(0, -1).split("\n") : source.split("\n");
+  for (const [index, line] of lines.entries()) {
+    const number = start + index;
+    const wrapper = document.createElement("span");
+    wrapper.className = `zensical-code-line${selected.has(index + 1) || selected.has(number) ? " is-highlighted" : ""}`;
+    wrapper.id = `__span-${number}`;
+    wrapper.dataset.line = String(number);
+    wrapper.innerHTML = highlightedLine(line, language) || " ";
+    code.append(wrapper);
+  }
+}
+
+function codeMetadata (pre) {
+  try {
+    return JSON.parse(pre.dataset.zensicalCode || "{}");
+  } catch {
+    return {};
+  }
+}
+
 function decorateCodeBlock (pre, language = "") {
   const code = pre.querySelector(":scope > code");
   if (!code || pre.parentElement?.classList.contains("code-block")) return;
 
-  highlightCode(code, language);
+  const metadata = codeMetadata(pre);
+  const actualLanguage = metadata.language || language;
+  if (metadata.linenums || metadata.highlights) highlightedLines(code, actualLanguage, metadata);
+  else highlightCode(code, actualLanguage);
   const wrapper = document.createElement("div");
   wrapper.className = "code-block";
+  if (metadata.id) wrapper.id = metadata.id;
+  if (metadata.classes?.length) wrapper.classList.add(...metadata.classes);
   pre.replaceWith(wrapper);
   wrapper.append(
-    makeCodeToolbar(language || "code", () => wrapper.querySelector("pre code")),
+    makeCodeToolbar(metadata.title || actualLanguage || "code", () => wrapper.querySelector("pre code"), true),
     pre
   );
+}
+
+function decorateCodeAnnotations (container) {
+  for (const block of container.querySelectorAll(".code-block")) {
+    const notes = block.nextElementSibling;
+    if (!notes?.matches("ol")) continue;
+    const labels = Array.from(notes.children).filter(item => item.matches("li"));
+    if (!labels.length) continue;
+    const code = block.querySelector("pre code");
+    const showText = document.defaultView?.NodeFilter?.SHOW_TEXT ?? 4;
+    const walker = document.createTreeWalker(code, showText);
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    for (const node of nodes) {
+      if (!/\((\d+)\)!?/.test(node.data)) continue;
+      const fragment = document.createDocumentFragment();
+      let cursor = 0;
+      for (const match of node.data.matchAll(/\((\d+)\)!?/g)) {
+        const position = Number(match[1]) - 1;
+        if (!labels[position]) {
+          fragment.append(node.data.slice(cursor, match.index + match[0].length));
+          cursor = match.index + match[0].length;
+          continue;
+        }
+        fragment.append(node.data.slice(cursor, match.index));
+        const marker = document.createElement("button");
+        marker.type = "button";
+        marker.className = "code-annotation";
+        marker.textContent = match[1];
+        marker.title = labels[position].textContent.trim();
+        marker.addEventListener("click", () => labels[position].scrollIntoView({ block: "center" }));
+        fragment.append(marker);
+        cursor = match.index + match[0].length;
+      }
+      if (!cursor) continue;
+      fragment.append(node.data.slice(cursor));
+      node.replaceWith(fragment);
+    }
+    notes.classList.add("code-annotations");
+  }
 }
 
 function loadMermaid () {
@@ -172,25 +294,51 @@ async function renderMermaidBlocks (container) {
   }
 }
 
+function loadMathJax () {
+  if (window.MathJax?.typesetPromise) return Promise.resolve(window.MathJax);
+  if (mathJaxLoad) return mathJaxLoad;
+  window.MathJax = {
+    tex: { inlineMath: [["\\(", "\\)"]], displayMath: [["\\[", "\\]"]] },
+    options: { ignoreHtmlClass: ".*|", processHtmlClass: "arithmatex" }
+  };
+  mathJaxLoad = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://unpkg.com/mathjax@3.2.2/es5/tex-mml-chtml.js";
+    script.async = true;
+    script.addEventListener("load", () => resolve(window.MathJax), { once: true });
+    script.addEventListener("error", () => reject(new Error("MathJax did not load")), { once: true });
+    document.head.append(script);
+  });
+  return mathJaxLoad;
+}
+
 export async function renderMarkdown (container, source) {
   const parser = requireRenderer("Marked", window.marked);
-  const parsed = parser.parse(source, {
-    gfm: true,
-    breaks: false,
-    pedantic: false,
-    silent: false
-  });
-
-  container.innerHTML = parsed;
+  const zensical = await renderZensicalMarkdown(container, source, parser);
   hardenRenderedLinks(container);
   await renderMermaidBlocks(container);
   hardenRenderedLinks(container);
+
+  for (const code of container.querySelectorAll("code[data-inline-language]")) {
+    highlightCode(code, code.dataset.inlineLanguage);
+  }
 
   for (const code of Array.from(container.querySelectorAll("pre > code"))) {
     if (code.closest(".mermaid-source")) continue;
     decorateCodeBlock(code.parentElement, languageOf(code));
   }
+  decorateCodeAnnotations(container);
+  if (zensical.hasMath) {
+    try {
+      const mathJax = await loadMathJax();
+      await mathJax.typesetPromise([container]);
+    } catch {
+      // Formulas remain readable TeX when the optional network renderer is unavailable.
+    }
+  }
 }
+
+export { zensicalInteractionBootstrap };
 
 const javascriptPattern = /(\/\*[\s\S]*?\*\/|\/\/[^\n]*|`(?:\\.|[^`])*`|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b(?:const|let|var|function|return|class|new|if|else|for|while|switch|case|break|continue|try|catch|finally|throw|async|await|import|export|from|true|false|null|undefined|this|typeof|instanceof)\b|\b(?:0x[\da-f]+|\d+(?:\.\d+)?)\b)/gi;
 

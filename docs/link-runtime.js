@@ -6,6 +6,7 @@ import {
 import { compress, decompress } from "./compress.js";
 
 const routePrefixes = Object.freeze([
+  ["ss:", "super-source"],
   ["sm:", "source-markdown"],
   ["sj:", "source-javascript"],
   ["sh:", "source-html"],
@@ -37,6 +38,7 @@ export function splitLinkFragment (fragment) {
 }
 
 export function linkPrefixForMode (mode) {
+  if (mode === "super-source") return "ss:";
   if (mode === "source-markdown") return "sm:";
   if (mode === "source-javascript") return "sj:";
   if (mode === "source-html") return "sh:";
@@ -245,6 +247,43 @@ export function anchorResolvedHTML (source, target) {
 
 export function isImageLinkTarget (target) {
   return mediaLinkKind(target) === "image";
+}
+
+function decodeLinkEntities (value) {
+  return String(value)
+    .replaceAll("&amp;", "&")
+    .replaceAll("&#38;", "&")
+    .replaceAll("&#x26;", "&")
+    .replaceAll("&#X26;", "&")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#34;", '"')
+    .replaceAll("&#x22;", '"')
+    .replaceAll("&#X22;", '"');
+}
+
+/**
+ * Read a deliberately tiny indirection file. It must contain exactly one
+ * physical line: a bare web URL, one Markdown link, or one HTML anchor.
+ */
+export function extractSingleLinkDocument (source) {
+  const value = String(source).trim();
+  if (!value || /[\r\n]/.test(value)) return "";
+
+  let candidate = /^https?:\/\/\S+$/i.test(value) ? value : "";
+  if (!candidate) {
+    candidate = value.match(/^<a\b[^>]*\bhref\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'`=<>]+))[^>]*>[\s\S]*<\/a>$/i)
+      ?.slice(1).find(Boolean) || "";
+  }
+  if (!candidate) {
+    candidate = value.match(/^\[[^\]]*\]\((https?:\/\/\S+)\)$/i)?.[1] || "";
+  }
+  if (!candidate) return "";
+
+  try {
+    return validateLinkTarget(decodeLinkEntities(candidate), { inferProtocol: false });
+  } catch {
+    return "";
+  }
 }
 
 export function isPdfLinkTarget (target) {
