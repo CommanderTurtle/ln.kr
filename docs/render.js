@@ -2,6 +2,7 @@ import {
   renderZensicalMarkdown,
   zensicalInteractionBootstrap
 } from "./zensical.js";
+import { installPreviewNavigation } from "./preview-navigation.js";
 
 let mermaidLoad = null;
 let mermaidReady = false;
@@ -18,7 +19,7 @@ function isJavaScriptLink (link) {
 
 export function hardenRenderedLinks (container) {
   for (const link of container.querySelectorAll("a[href]")) {
-    if (isJavaScriptLink(link)) continue;
+    if (isJavaScriptLink(link) || (link.getAttribute("href") || "").trim().startsWith("#")) continue;
     if (!link.hasAttribute("target")) link.setAttribute("target", "_blank");
 
     const rel = new Set((link.getAttribute("rel") || "").split(/\s+/).filter(Boolean));
@@ -315,6 +316,7 @@ function loadMathJax () {
 export async function renderMarkdown (container, source) {
   const parser = requireRenderer("Marked", window.marked);
   const zensical = await renderZensicalMarkdown(container, source, parser);
+  installPreviewNavigation(container);
   hardenRenderedLinks(container);
   await renderMermaidBlocks(container);
   hardenRenderedLinks(container);

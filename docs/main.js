@@ -22,6 +22,7 @@ import {
 import { decodeDocumentPayload } from "./payload.js";
 import { compressTextV1, compressTextV2, compressTextV3, compressTextV4, detectKind } from "./text-compress.js";
 import { renderContent, zensicalInteractionBootstrap } from "./render.js";
+import { previewNavigationBootstrap } from "./preview-navigation.js";
 import {
   applySourceLineSlice,
   expandResolvedResourceLinks,
@@ -1215,6 +1216,7 @@ function documentLinkBootstrap (token, copyCode = false) {
   const harden = root => {
     const links = root.matches?.("a[href]") ? [root] : root.querySelectorAll?.("a[href]") || [];
     for (const link of links) {
+      ${copyCode ? 'if ((link.getAttribute("href") || "").trim().startsWith("#")) continue;' : ""}
       if (/^\\s*javascript\\s*:/i.test(link.getAttribute("href") || "")) continue;
       if (!link.hasAttribute("target")) link.setAttribute("target", "_blank");
       const rel = new Set((link.getAttribute("rel") || "").split(/\\s+/).filter(Boolean));
@@ -1230,6 +1232,7 @@ function documentLinkBootstrap (token, copyCode = false) {
     }
   }).observe(document.documentElement, { childList: true, subtree: true });
   ${zensicalInteractionBootstrap()}
+  ${copyCode ? previewNavigationBootstrap() : ""}
   ${copyCode ? `const copyText = async text => {
     try {
       await navigator.clipboard.writeText(text);
