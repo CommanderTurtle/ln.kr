@@ -47,3 +47,12 @@ test("expanded document codeblocks copy during the iframe click gesture", async 
   expect(main).toContain('document.execCommand("copy")');
   expect(main).toContain('source: "ln.kr-copy"');
 });
+
+test("decorated module source stays in its hover capsule", async () => {
+  const styles = await Bun.file(new URL("../docs/styles.css", import.meta.url)).text();
+
+  expect(styles).toContain(".lnkr-module-source > pre, .lnkr-module-source > .code-block");
+  expect(styles).toContain(".lnkr-module-source:hover > .code-block");
+  expect(styles).toContain("display: none");
+  expect(styles).toContain("display: block");
+});
