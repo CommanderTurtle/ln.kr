@@ -281,6 +281,134 @@ special behavior belongs to source rendered by a.shel.sh. Source routes fetch
 CORS-readable public text directly. Runtime inclusion remains reserved for
 textual Markdown, JavaScript, CSS, HTML, and similar source files.
 
+## Optional repository rendering
+
+An exact first line `style=zensical`, `style=jekyll`, or `style=node` enables
+a render recipe. `theme=` is an alias for `style=`. Without that first line,
+rendering and all existing links behave exactly as before. Headers are hidden
+only in the preview; the original recipe remains in Exact source, copy, edit,
+and the compressed link. Nothing changes in any compression engine.
+
+```ini
+theme=jekyll
+
+# My document
+
+Ordinary Markdown, including the existing rich Markdown features.
+```
+
+Zensical uses the current renderer and appearance. Jekyll supplies a small,
+Minima-inspired light skin—not a Ruby/Liquid engine. Neither theme-only form
+fetches a repository. `node` means browser-ready HTML/JavaScript, not a Node
+process, package installer, or build command.
+
+### Bases are not page includes
+
+```ini
+style=node
+repo=https://github.com/owner/project/tree/main
+body=https://github.com/owner/project/tree/main/dist
+css=https://github.com/owner/project/tree/main/dist
+script=https://github.com/owner/project/tree/main/dist
+base=/project/
+
+<!doctype html>
+<html><head><link rel="stylesheet" href="./assets/site.css"></head>
+<body><h1>My page</h1><img src="./assets/photo.webp">
+<script type="module" src="./assets/site.js"></script></body></html>
+```
+
+- `repo=`: repository root used to resolve header pointers and locate optional
+  theme configuration. It never imports the repository's page content.
+- `body=`: base for relative body resources (`src`, `href`, `poster`, etc.).
+  It does **not** fetch or insert that body. A tree/trailing-slash URL names a
+  directory; a file pointer selects that file's containing directory.
+- `css=` / `script=` with a tree or trailing-slash URL: separate bases for
+  stylesheet and JavaScript references. No index body or scripts are imported
+  just because a directory was named. Only one directory base of each type is
+  allowed. Additional explicit **file** pointers load that stylesheet/module;
+  these may use existing shel source links and line slices.
+- `artifact=`: optional built-output directory, used as the default resource
+  root. For Jekyll/Zensical its index can be inspected **for stylesheets and
+  color-scheme attributes only**; page contents and scripts are not copied.
+- `base=`: original deployment mount, for example `/project/`, so an authored
+  `/project/assets/site.js` resolves within the artifact rather than a raw
+  host's domain root.
+
+GitHub tree URLs map to raw.githubusercontent.com. Hugging Face model, dataset,
+and Space trees map to their `resolve` files, which also handles LFS. Shel links
+to those directories work too. Other directory URLs should end in `/`.
+Relative header pointers use `repo`, otherwise `artifact`, otherwise the raw
+recipe's directory. Resources inside a fetched CSS/JS file keep that file's
+own relative base; explicit directory overrides also control root-relative URLs.
+
+The document itself must be written below the header or included with an
+existing standalone shel/superlink line pointing at the **actual file**. For
+example, shorten the raw `dist/index.html` as a source link and put that link
+on its own line below the header. This is the existing modular include, not
+an implicit repository-index import. `#s:`, `#sm:`, `#sh:`, `#hs:` and their
+existing `::~start:span` slices keep their original meanings.
+
+### Repository theme styling
+
+```ini
+style=zensical
+repo=https://github.com/owner/docs/tree/main
+artifact=https://github.com/owner/docs/tree/main/site
+
+# My own content
+
+This uses the built theme's CSS, not the artifact's homepage.
+```
+
+For Jekyll, use `style=jekyll` and the built `_site` directory instead.
+Without an explicit artifact, the loader looks for the simple `destination`
+setting in `_config.yml`/`.yaml`, or `site_dir` in `zensical.toml` /
+`mkdocs.yml` / `.yaml`; defaults are `_site` and `site`. Built files must
+actually exist at the pointer. Configuration is read as data, never executed.
+Unbuilt Sass, Liquid, Python plugins, TSX and package scripts are not compiled.
+Layouts, navigation and page bodies are deliberately not copied from a theme.
+
+A raw file containing a recipe also works through `#ss:`. When a fetched
+recipe becomes an editable full link, an explicit `repo=` base is retained so
+its relative references survive reloading/sharing that link.
+
+### Browser execution and boundaries
+
+Only the opt-in recipe path prepares fetched JS/CSS bytes with their correct
+MIME types. Raw GitHub's `text/plain` / `nosniff` responses otherwise prevent
+them being used directly as scripts/styles. The lazy module lexer recognizes
+real ESM imports, literal dynamic imports, cycles, JSON imports and
+`import.meta.url`; it does not rewrite fake imports in comments/strings.
+Browser import maps and browser ESM entries in existing `node_modules` are
+supported. CSS imports and asset URLs are rebased. Referenced static HTML
+iframes are prepared too; internal HTML navigation uses ordinary shel fragment
+links rather than inventing server paths.
+
+The initial repository preview is inert. Run in sandbox enables its scripts;
+Allow network requests still controls the running preview. Repository files
+must first be fetched to prepare it, just like existing source modules.
+The preparation cache is limited to 256 text files / 32 MiB / 16 nested frames,
+with a 20-second per-request timeout. Failures are explicit.
+
+This does not bypass CORS, provide a server filesystem, impersonate the target
+origin, enable origin storage inside an opaque sandbox, or run server-only
+dependencies. Computed module imports need a prebuilt literal chunk map.
+Applications depending on their own origin, service workers, runtime-created
+raw-host iframes, or restrictive artifact CSP may need a portable build; naming
+their repository is not a promise that every application can be rehosted.
+No proxy, backend, worker service or package installation is added to ln.kr.
+
+The new module parser is pinned and lazy (20 KB uncompressed); no framework,
+WASM compiler, Jekyll runtime or Zensical build runtime ships with this feature.
+
+Browser checks, using only a static fixture host and in-browser mocked raw files:
+
+```bash
+bun tests/serve-repo-fixture.js
+# Open http://127.0.0.1:4174/
+```
+
 ## Run locally
 
 No install or build is required for the site. Bun is only used for the local

@@ -379,3 +379,17 @@ footer a { color: var(--muted); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
 }
+.preview.lnkr-theme-jekyll, .lnkr-theme-jekyll {
+  color: #111; background: #fdfdfd; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  line-height: 1.5; padding: clamp(1.25rem, 4vw, 3rem);
+}
+.lnkr-theme-jekyll :is(h1,h2,h3,h4,h5,h6) { color: #222; font-family: system-ui, sans-serif; font-weight: 500; }
+.lnkr-theme-jekyll a { color: #1756a9; }
+.lnkr-theme-jekyll blockquote { color: #626262; border-color: #ddd; }
+.lnkr-theme-jekyll :is(th,td) { border-color: #ddd; }
+.lnkr-theme-jekyll .admonition { color: #292929; background: #f3f5f8; }
+.lnkr-theme-jekyll :is(pre,code) { background: #eef; color: #282c34; }
+.lnkr-theme-jekyll pre code { background: transparent; }
+.lnkr-theme-jekyll :is(.hljs-keyword,.hljs-selector-tag,.hljs-built_in) { color: #6f42c1; }
+.lnkr-theme-jekyll :is(.hljs-string,.hljs-attr,.hljs-literal) { color: #032f62; }
+.lnkr-theme-jekyll :is(.hljs-comment,.hljs-quote) { color: #59636e; }

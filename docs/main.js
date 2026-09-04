@@ -23,6 +23,7 @@ import { decodeDocumentPayload } from "./payload.js";
 import { compressTextV1, compressTextV2, compressTextV3, compressTextV4, detectKind } from "./text-compress.js";
 import { renderContent, zensicalInteractionBootstrap } from "./render.js";
 import { previewNavigationBootstrap } from "./preview-navigation.js";
+import { hasRepositoryHeader, anchorRepositoryHeader, repositoryDocumentKind, createRepositoryRenderer, repositoryFrame, activateRepositoryFrames } from "./repo-render.js";
 import {
   applySourceLineSlice,
   expandResolvedResourceLinks,
@@ -138,6 +139,9 @@ let currentPdfLink = "";
 let currentTarget = "";
 let currentDocument = null;
 let currentRuntimeSource = "";
+let currentRuntimeKind = "";
+let currentRepositoryDocument = null;
+let repositoryModules = false;
 const moduleObjectURLs = new Set();
 let qrModule = null;
 let toastTimer = null;
@@ -380,7 +384,7 @@ async function generateLink () {
 
   try {
     const alphabet = elements.emoji.checked ? outputAlphabetEmoji : outputAlphabetASCII;
-    const encoded = activeTextEncoder()(source, alphabet, elements.format.value);
+    const encoded = activeTextEncoder()(source, alphabet, repositoryDocumentKind(source, elements.format.value));
     currentLink = outputURL(encoded.payload);
     currentRunLink = executablePrefixForKind(encoded.kind)
       ? outputURL(encoded.payload, encoded.kind)
@@ -455,8 +459,9 @@ async function probeSuperlink (target, payload, generation) {
       signal: AbortSignal.timeout(5000)
     });
     if (!response.ok || generation !== superlinkProbeGeneration) return;
-    const inner = extractSingleLinkDocument(await response.text());
-    if (!inner || generation !== superlinkProbeGeneration) return;
+    const source = await response.text();
+    const inner = extractSingleLinkDocument(source);
+    if ((!inner && !hasRepositoryHeader(source)) || generation !== superlinkProbeGeneration) return;
     currentSuperLink = outputLinkURL(payload, "super-source");
     elements.copySuper.hidden = false;
   } catch {
@@ -545,7 +550,15 @@ async function showSuperLink (target, generation) {
       headers: { accept: "text/plain, text/html;q=0.9, */*;q=0.1" }
     });
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`.trim());
-    const inner = extractSingleLinkDocument(await response.text());
+    const source = await response.text();
+    if (hasRepositoryHeader(source)) {
+      if (generation !== sourceResolveGeneration) return;
+      const encoded = compressTextV1(anchorRepositoryHeader(source, sourceURLForTarget(target)), outputAlphabetASCII, repositoryDocumentKind(source));
+      history.replaceState(null, "", outputURL(encoded.payload));
+      decodeLocation();
+      return;
+    }
+    const inner = extractSingleLinkDocument(source);
     if (!inner) throw new Error("The target is not an exact one-line link document");
     if (generation !== sourceResolveGeneration) return;
     window.location.replace(inner);
@@ -610,10 +623,10 @@ async function resolveSourceLink (target, mode, generation, lineSlice = null) {
       throw new Error(`The source is binary (${contentType || "unknown media type"})`);
     }
     const fetchedSource = applySourceLineSlice(await response.text(), lineSlice);
-    const kind = requestedKind === "auto"
+    const kind = repositoryDocumentKind(fetchedSource, requestedKind === "auto"
       ? sourceKindHint(sourceURL, contentType) || detectKind(fetchedSource)
-      : requestedKind;
-    const source = kind === "html"
+      : requestedKind);
+    const source = hasRepositoryHeader(fetchedSource) ? anchorRepositoryHeader(fetchedSource, sourceURL) : kind === "html"
       ? anchorResolvedHTML(fetchedSource, sourceURL)
       : fetchedSource;
     if (generation !== sourceResolveGeneration) return;
@@ -995,8 +1008,8 @@ function stopRunner () {
 }
 
 function updateRunMode () {
-  const native = currentDocument?.kind === "javascript" && elements.parentScope.checked;
-  const documentViewer = ["markdown", "html"].includes(currentDocument?.kind);
+  const native = currentRuntimeKind === "javascript" && elements.parentScope.checked;
+  const documentViewer = ["markdown", "html"].includes(currentRuntimeKind);
   elements.run.textContent = native ? "Run on page" : "Run in sandbox";
   elements.run.classList.toggle("native-run-button", native);
   elements.networkControl.hidden = !documentViewer;
@@ -1033,6 +1046,10 @@ function showViewer (decoded, payload, alphabet) {
   hidePrimarySections();
   currentDocument = decoded;
   currentRuntimeSource = decoded.text;
+  currentRuntimeKind = decoded.kind;
+  currentRepositoryDocument = null;
+  repositoryModules = false;
+  elements.preview.classList.remove("lnkr-theme-jekyll");
   setHeaderMode("text");
   elements.viewer.hidden = false;
   elements.viewerKind.textContent = decoded.kind;
@@ -1042,19 +1059,56 @@ function showViewer (decoded, payload, alphabet) {
   elements.sourceView.textContent = decoded.text;
   const generation = ++renderGeneration;
   const appURL = rootURL();
-  currentRender = expandSourceIncludes(decoded.text, {
+  const includeOptions = {
     appURL,
     documentKind: decoded.kind,
     resourceLinkForTarget: shortResourceURL,
     resourceURLForTarget: sourceURLForTarget,
-    showModuleSource: true
+    showModuleSource: true,
+    transformSource: async (source, sourceURL) => {
+      if (!hasRepositoryHeader(source)) return null;
+      const prepared = await repositories.prepare(source, "markdown", sourceURL);
+      if (generation === renderGeneration) repositoryModules = true;
+      if (prepared.kind === "html") return repositoryFrame(prepared.source);
+      const node = document.createElement("article");
+      await renderContent(node, prepared.source, prepared.kind);
+      return `<section class="lnkr-theme-${prepared.theme}">${node.innerHTML}</section>`;
+    }
+  };
+  const repositories = createRepositoryRenderer({
+    appURL,
+    styles: collectFrameStyles,
+    expandModules: async (text, kind) => expandResolvedResourceLinks((await expandSourceIncludes(text, { ...includeOptions, documentKind: kind })).text, { appURL }),
+    renderMarkdown: async text => {
+      const node = document.createElement("article");
+      await renderContent(node, expandResolvedResourceLinks(text, { appURL }), "markdown");
+      return node.innerHTML;
+    }
+  });
+  currentRender = repositories.prepare(decoded.text, decoded.kind).then(async prepared => {
+    if (generation !== renderGeneration) return null;
+    currentRepositoryDocument = prepared;
+    if (prepared) {
+      currentRuntimeKind = prepared.kind;
+      elements.run.hidden = false;
+      elements.runScopeControl.hidden = true;
+      elements.parentScope.checked = false;
+      updateRunMode();
+    }
+    return expandSourceIncludes(prepared?.source ?? decoded.text, includeOptions);
   }).then(expanded => {
     if (generation !== renderGeneration) return;
     currentRuntimeSource = expandResolvedResourceLinks(expanded.text, { appURL });
-    const displaySource = ["markdown", "html"].includes(decoded.kind)
+    if (currentRepositoryDocument?.kind === "html") {
+      elements.preview.innerHTML = repositoryFrame(currentRuntimeSource);
+      updateRunMode();
+      return;
+    }
+    elements.preview.classList.toggle("lnkr-theme-jekyll", currentRepositoryDocument?.theme === "jekyll");
+    const displaySource = ["markdown", "html"].includes(currentRuntimeKind)
       ? currentRuntimeSource
       : decoded.text;
-    return renderContent(elements.preview, displaySource, decoded.kind)
+    return renderContent(elements.preview, displaySource, currentRuntimeKind)
       .then(() => hydratePdfModules(elements.preview));
   })
     .catch(error => {
@@ -1306,20 +1360,24 @@ async function runCurrentDocument ({ expand = false, scroll = true } = {}) {
   elements.runnerLog.textContent = "";
   updateRunMode();
 
-  const policy = "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'";
-  if (currentDocument.kind === "html") {
+  const policy = "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'" +
+    (currentRepositoryDocument || repositoryModules ? " data: blob:; connect-src data:; frame-src data: blob: about:; style-src-elem 'unsafe-inline' data: blob:" : "");
+  if (currentRuntimeKind === "html") {
     const allowNetwork = elements.network.checked;
     elements.runnerFrame.setAttribute("sandbox", allowNetwork
       ? "allow-scripts allow-popups allow-popups-to-escape-sandbox"
       : "allow-scripts");
+    const runtimeHTML = currentRepositoryDocument
+      ? currentRuntimeSource.replace(/<\/body>/i, `<script>${documentLinkBootstrap(runToken, true)}<\/script></body>`)
+      : currentRuntimeSource;
     elements.runnerFrame.srcdoc = allowNetwork
-      ? currentRuntimeSource
-      : `<meta http-equiv="Content-Security-Policy" content="${policy}"><script>${documentLinkBootstrap(runToken)}<\/script>${currentRuntimeSource}`;
+      ? runtimeHTML
+      : `<meta http-equiv="Content-Security-Policy" content="${policy}">${currentRepositoryDocument ? "" : `<script>${documentLinkBootstrap(runToken)}<\/script>`}${runtimeHTML}`;
     revealRunner({ expand, scroll });
     return;
   }
 
-  if (currentDocument.kind === "markdown") {
+  if (currentRuntimeKind === "markdown") {
     const allowNetwork = elements.network.checked;
     elements.runnerFrame.setAttribute("sandbox", allowNetwork
       ? "allow-scripts allow-popups allow-popups-to-escape-sandbox"
@@ -1327,8 +1385,8 @@ async function runCurrentDocument ({ expand = false, scroll = true } = {}) {
     const meta = allowNetwork
       ? ""
       : `<meta http-equiv="Content-Security-Policy" content="${policy}">`;
-    const bootstrap = `<script>${documentLinkBootstrap(runToken, true)}<\/script>`;
-    elements.runnerFrame.srcdoc = `<!doctype html><html><head>${meta}<style>${collectFrameStyles()}</style>${bootstrap}</head><body><article class="preview frame-preview">${elements.preview.innerHTML}</article></body></html>`;
+    const bootstrap = `<script>${documentLinkBootstrap(runToken, true)}${repositoryModules ? `addEventListener('DOMContentLoaded',()=>{${activateRepositoryFrames}});` : ""}<\/script>`;
+    elements.runnerFrame.srcdoc = `<!doctype html><html><head>${meta}<style>${collectFrameStyles()}</style>${bootstrap}</head><body><article class="preview frame-preview${currentRepositoryDocument?.theme === "jekyll" ? " lnkr-theme-jekyll" : ""}">${elements.preview.innerHTML}</article></body></html>`;
     revealRunner({ expand, scroll });
     return;
   }
@@ -1352,7 +1410,8 @@ document.body.append(executable);
 }
 
 async function requestRun () {
-  if (currentDocument?.kind === "javascript" && elements.parentScope.checked) {
+  await currentRender;
+  if (currentRuntimeKind === "javascript" && elements.parentScope.checked) {
     await runInParentScope();
     return;
   }
