@@ -283,6 +283,7 @@ export async function expandSourceIncludes (source, {
   resourceLinkForTarget,
   resourceURLForTarget,
   showModuleSource = false,
+  transformSource = null,
   fetchImpl = globalThis.fetch,
   limits = defaultLimits
 }) {
@@ -355,6 +356,11 @@ export async function expandSourceIncludes (source, {
       nestedAncestors.add(include.key);
       if (include.mode === "super-source") {
         const outer = await fetchSource(include.target);
+        const prepared = transformSource && await transformSource(outer.text, outer.sourceURL);
+        if (prepared !== null && prepared !== false && prepared !== undefined) {
+          output.push(indentSource(prepared, include.indent) + include.ending);
+          continue;
+        }
         const innerHref = extractSingleLinkDocument(outer.text);
         const inner = innerHref && sourceLinkFromLine(innerHref, appURL);
         if (!inner || !slicedSourceModes.has(inner.mode)) {
@@ -372,7 +378,8 @@ export async function expandSourceIncludes (source, {
         if (includeMediaKind(inner, record.contentType, record.sourceURL)) {
           throw new Error("A superlink source route must resolve to textual source");
         }
-        const imported = applySourceLineSlice(record.text, inner.lineSlice);
+        let imported = applySourceLineSlice(record.text, inner.lineSlice);
+        if (transformSource) imported = await transformSource(imported, record.sourceURL) ?? imported;
         let replacement = await expand(imported, depth + 2, nestedAncestors);
         if (showModuleSource && documentKind === "markdown") {
           const spacer = replacement && !/(?:\r\n|\n|\r)$/.test(replacement) ? "\n" : "";
@@ -407,10 +414,11 @@ export async function expandSourceIncludes (source, {
         output.push(replacement);
         continue;
       }
-      const imported = applySourceLineSlice(
+      let imported = applySourceLineSlice(
         record.text,
         include.lineSlice
       );
+      if (transformSource) imported = await transformSource(imported, record.sourceURL) ?? imported;
       let replacement = await expand(imported, depth + 1, nestedAncestors);
       if (showModuleSource && documentKind === "markdown") {
         const spacer = replacement && !/(?:\r\n|\n|\r)$/.test(replacement) ? "\n" : "";
