@@ -4,6 +4,9 @@ import { createRepositoryRenderer } from "../docs/repo-render.js";
 import { decodeDocumentPayload } from "../docs/payload.js";
 import { encodeLinkTarget } from "../docs/link-runtime.js";
 import { expandSourceIncludes } from "../docs/source-includes.js";
+import { compressTextV4 } from '../docs/text-compress.js';
+import { outputAlphabetASCII } from '../docs/alphabets.js';
+import { checkPreviewThemes } from './preview-theme.browser.js';
 
 const root = "https://raw.githubusercontent.com/fixture/site/main/dist/";
 const files = {
@@ -44,6 +47,11 @@ function check (name, pass, detail = "") {
 }
 const hits = new Map();
 const appURL = location.origin + "/docs/";
+if(new URL(location.href).searchParams.has('compressed')) {
+  for(const path of ['index.html','style.css','colors.css','main.js','dep.js','lazy.js','inner/index.html']) {
+    files[path]=appURL+'#'+compressTextV4(files[path],outputAlphabetASCII,'text').payload;
+  }
+}
 const pointer = file => appURL + "#sh:" + encodeLinkTarget(root + file).payload;
 const fetchImpl = async url=>{
     hits.set(url,(hits.get(url)||0)+1);
@@ -52,7 +60,8 @@ const fetchImpl = async url=>{
 };
 const renderer = createRepositoryRenderer({appURL, fetchImpl,
   renderMarkdown:async text=>`<h2>${text}</h2>`,
-  expandModules:async (text, kind)=>(await expandSourceIncludes(text,{appURL,fetchImpl,documentKind:kind,resourceURLForTarget:x=>x})).text});
+  expandModules:async (text, kind)=>(await expandSourceIncludes(text,{appURL,fetchImpl,documentKind:kind,resourceURLForTarget:x=>x,
+    transformSource:async(source,url)=>(await renderer.expandStoredSource(source,url)).source})).text});
 try {
   const empty = await renderer.prepare(`style=node\nrepo=${root}\nbody=${root}`,"html");
   check("directory headers never import index/body",hits.size === 0 && !empty.source.includes("Artifact"));
@@ -68,7 +77,7 @@ try {
   const done = new Promise(resolve=>{
     const timeout = setTimeout(()=>{check("browser execution completed",false, [...messages].join(","));resolve();},8000);
     addEventListener("message",event=>{
-      if (!event.data?.fixture || messages.has(event.data.fixture)) return;
+      if (!['modules','frame','error','policy'].includes(event.data?.fixture) || messages.has(event.data.fixture)) return;
       messages.add(event.data.fixture);
       check(`native browser ${event.data.fixture}`, event.data.ok, event.data.detail || "");
       if(messages.has('modules') && messages.has('frame')){clearTimeout(timeout);resolve();}
@@ -94,5 +103,6 @@ try {
   check("body/css/script directory bases stay independent", rooted.source.includes(root+'parts/photo.webp') &&
     rooted.source.includes(root+'code/extra.js') && hits.has(root+'skin/theme.css') && !hits.has(root+'code/index.html'));
   await done;
+  await checkPreviewThemes(check);
 } catch(error) { check("compilation",false,error.stack); }
 document.querySelector("#status").textContent=failed ? "FAILED" : "ALL BROWSER CHECKS PASSED";
