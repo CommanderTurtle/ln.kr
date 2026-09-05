@@ -4,6 +4,7 @@ import { previewAppearanceBootstrap } from '../docs/preview-appearance.js';
 import { previewNavigationBootstrap } from '../docs/preview-navigation.js';
 import { createRepositoryRenderer, repositoryFrame } from '../docs/repo-render.js';
 import { checkReadingNavigation } from './reading-nav.browser.js';
+import { checkFrameChrome } from './frame-chrome.browser.js';
 
 export async function checkPreviewThemes (check) {
   const load = (tag,attrs) => new Promise((resolve,reject) => {
@@ -98,4 +99,5 @@ export async function checkPreviewThemes (check) {
   token.focus();
   check('keyboard focus reveals the light-themed hover capsule',getComputedStyle(capsule.querySelector('pre')).display==='block');
   await checkReadingNavigation(check,styles);
+  await checkFrameChrome(check,styles);
 }

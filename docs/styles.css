@@ -203,6 +203,11 @@ select { min-width: 9rem; border: 1px solid var(--line-strong); border-radius: 0
 .tabs { display: flex; gap: 0.25rem; padding: 0.7rem; border-bottom: 1px solid var(--line); }
 .tabs button { min-height: 2rem; border-color: transparent; padding: 0.35rem 0.7rem; color: var(--muted); background: transparent; font-size: 0.78rem; }
 .tabs button[aria-selected="true"] { color: var(--accent); background: rgba(168, 240, 180, 0.08); }
+.document-head { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
+.document-head .tabs { border-bottom: 0; }
+.appearance-slot { display: flex; align-items: center; }
+.document-head > .appearance-slot { margin-right: .7rem; }
+.appearance-slot .lnkr-preview-tools { margin: 0; }
 .preview, .source-view { min-height: 24rem; margin: 0; padding: clamp(1.25rem, 4vw, 3.4rem); overflow: auto; }
 .preview { color: #dce6de; line-height: 1.72; }
 .preview > :first-child { margin-top: 0; }
@@ -455,3 +460,18 @@ footer a { color: var(--muted); }
 [data-lnkr-scheme="light"] .lnkr-module-token::before { background: #2d6a3e; box-shadow: 0 0 .5rem #2d6a3e55; }
 [data-lnkr-scheme="light"] .lnkr-module-token:is(:hover,:focus-visible) { color: #173e22; border-color: #2d6a3e; box-shadow: 0 0 1.15rem #2d6a3e22; }
 [data-lnkr-scheme="light"] .lnkr-module-source > :is(pre,.code-block) { color: #1a1714; background: #f0ece4; box-shadow: 0 12px 32px #1a171433; }
+
+/* Window chrome follows its document; no control row is inserted into the page. */
+:is(.runner,.document-shell)[data-lnkr-scheme="light"] {
+  --ink: #24272d; --muted: #5c626c; --subtle: #69717d; --accent: #2d6a3e;
+  --surface: #f3f4f6; --surface-2: #e8eaee; --canvas: #fafafb;
+  --line: #dde0e5; --line-strong: #cbd0d8;
+  color: var(--ink); background: var(--canvas); border-color: var(--line-strong);
+}
+:is(.runner,.document-shell)[data-lnkr-scheme="light"] :is(.runner-head,.document-head) {
+  background: linear-gradient(#fafafb,#eef0f3);
+}
+.runner[data-lnkr-scheme="light"] :is(#runner-frame,.runner-log) { background: var(--canvas); }
+.runner-expanded[data-lnkr-scheme="light"] {
+  box-shadow: 0 0 0 100vmax #18202b66, 0 24px 90px #18202b40;
+}
