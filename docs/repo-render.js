@@ -3,6 +3,9 @@ import { decodeLinkTarget, encodeLinkTarget, sourceResourceURL, splitLinkFragmen
 import { decodeDocumentPayload } from "./payload.js";
 import { splitExecutableFragment } from "./viewer-runtime.js";
 import { applySourceLineSlice, splitSourceLineSlice } from "./source-includes.js";
+import { decorateJekyllMarkdown, themePalette } from "./repo-theme.js";
+import { installPreviewAppearance, previewAppearanceBootstrap } from "./preview-appearance.js";
+import { previewNavigationBootstrap } from "./preview-navigation.js";
 
 const firstLine = /^\uFEFF?(?:style|theme)=(jekyll|zensical|node)[ \t]*(?:\r\n|\n|\r|$)/;
 const keys = new Set(["repo", "artifact", "css", "body", "script", "base"]);
@@ -84,14 +87,22 @@ export function repositoryAssetURL (value, parent, root, mount = "/") {
 }
 
 const escape = value => String(value).replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
-export const repositoryFrame = html => `<iframe data-lnkr-repository sandbox="" title="Repository preview" style="width:100%;height:75vh;border:0" srcdoc="${escape(html)}"></iframe>`;
-export const activateRepositoryFrames = `document.querySelectorAll('iframe[data-lnkr-repository]').forEach(frame=>{frame.setAttribute('sandbox','allow-scripts allow-popups allow-popups-to-escape-sandbox');frame.srcdoc=frame.srcdoc;});`;
+export function repositoryFrame (html) {
+  // Authored scripts stay inert before Run. A nonce permits only our Markdown
+  // appearance/bookmark controls in that otherwise inert preview.
+  const controls = html.includes('data-lnkr-appearance=');
+  const nonce = controls ? crypto.randomUUID().replaceAll('-', '') : '';
+  const prefix = controls ? `<!--lnkr-controls--><meta http-equiv="Content-Security-Policy" content="script-src 'nonce-${nonce}'; script-src-elem 'nonce-${nonce}'; script-src-attr 'none'"><script nonce="${nonce}">${previewAppearanceBootstrap()}${previewNavigationBootstrap()}<\/script><!--/lnkr-controls-->` : '';
+  return `<iframe data-lnkr-repository sandbox="${controls ? 'allow-scripts' : ''}" title="Repository preview" style="width:100%;height:75vh;border:0" srcdoc="${escape(prefix + html)}"></iframe>`;
+}
+export const activateRepositoryFrames = `document.querySelectorAll('iframe[data-lnkr-repository]').forEach(frame=>{frame.setAttribute('sandbox','allow-scripts allow-popups allow-popups-to-escape-sandbox');const source=frame.srcdoc;const end='<!--/lnkr-controls-->';frame.srcdoc=source.startsWith('<!--lnkr-controls-->')?source.slice(source.indexOf(end)+end.length):source;});`;
 
 export function createRepositoryRenderer ({ appURL, fetchImpl = globalThis.fetch, renderMarkdown,
   expandModules = async text => text, styles = () => "", parser = () => new DOMParser(), limits = {} }) {
   const cap = { files: 256, bytes: 32 * 1024 * 1024, depth: 16, ...limits };
   const cache = new Map();
   const stack = new Set();
+  const decodedLinks = new Map();
   let bytes = 0;
   const app = new URL(appURL);
 
@@ -131,11 +142,17 @@ export function createRepositoryRenderer ({ appURL, fetchImpl = globalThis.fetch
   async function read (pointer, base = appURL, depth = 0) {
     if (depth > cap.depth) throw new Error("Repository pointer nesting limit exceeded");
     const href = new URL(pointer, base).href;
-    if (shel(href)) {
+    if (shel(href) && new URL(href).hash) {
       const fragment = new URL(href).hash.slice(1);
       const route = splitLinkFragment(fragment);
       if (!route.mode) {
-        const decoded = decodeDocumentPayload(splitExecutableFragment(fragment).payload).decoded;
+        if (!decodedLinks.has(fragment)) {
+          const decoded = decodeDocumentPayload(splitExecutableFragment(fragment).payload).decoded;
+          bytes += new TextEncoder().encode(decoded.text).length;
+          if (bytes > cap.bytes) throw new Error(`Repository exceeds ${cap.bytes} text bytes`);
+          decodedLinks.set(fragment, decoded);
+        }
+        const decoded = decodedLinks.get(fragment);
         return { source: decoded.text, url: base, kind: decoded.kind, type: "text/plain" };
       }
       const slice = splitSourceLineSlice(route.payload);
@@ -143,13 +160,23 @@ export function createRepositoryRenderer ({ appURL, fetchImpl = globalThis.fetch
       const record = await read(target, base, depth + 1);
       if (route.mode === "super-source" && !hasRepositoryHeader(record.source)) {
         const inner = extractSingleLinkDocument(record.source);
-        if (!inner) throw new Error("Superlink must contain one link or a repository header");
+        // A raw pointer file may already have expanded to the document.
+        if (!inner) return { ...record, source: applySourceLineSlice(record.source, slice.lineSlice) };
         return read(inner, record.url, depth + 1);
       }
       return { ...record, source: applySourceLineSlice(record.source, slice.lineSlice) };
     }
     const target = isRepositoryTree(href) ? new URL("index.html", repositoryDirectory(href)).href : href;
-    return readURL(target);
+    const record = await readURL(target);
+    return { ...record, ...await expandStoredSource(record.source, record.url, depth + 1) };
+  }
+  async function expandStoredSource (source, sourceURL, depth = 0) {
+    // Only a bare shel URL denotes a compressed file. An authored <a> or a
+    // sentence containing a link remains document content.
+    const pointer = String(source).trim();
+    if (!/^https?:\/\/[^\s]+$/i.test(pointer) || !shel(pointer) || !new URL(pointer).hash) return { source };
+    const record = await read(pointer, sourceURL, depth + 1);
+    return { ...record, url: sourceURL };
   }
   function directory (value, base) { return repositoryDirectory(unwrap(value, base)); }
   function resourceBase (value, base) {
@@ -194,8 +221,10 @@ export function createRepositoryRenderer ({ appURL, fetchImpl = globalThis.fetch
       if (text.trim()) {
         const target = document.querySelector("article.md-content__inner, article.md-typeset, .post-content, main article, main") || document.body;
         target.innerHTML = await markdown(text);
-        target.classList.add("preview", "md-typeset", "post-content");
+        target.classList.add("preview", "frame-preview", "md-typeset", "post-content");
         if (!themeIndex) target.classList.add(`lnkr-theme-${recipe.theme}`);
+        if (recipe.theme === 'jekyll') decorateJekyllMarkdown(target);
+        installPreviewAppearance(target);
         if (!htmlBody) {
           const style = document.createElement("style"); style.textContent = styles();
           document.head.insertBefore(style, document.head.firstChild);
@@ -209,6 +238,12 @@ export function createRepositoryRenderer ({ appURL, fetchImpl = globalThis.fetch
           for (const attribute of ["data-md-color-scheme", "data-md-color-primary", "data-md-color-accent"]) {
             const value = theme.body.getAttribute(attribute);
             if (value) document.body.setAttribute(attribute, value);
+          }
+          themePalette(theme, document);
+          const content = document.querySelector('.frame-preview');
+          if (content && document.body.dataset.lnkrPalettes) {
+            content.dataset.lnkrAppearance = 'system';
+            installPreviewAppearance(content);
           }
         }
         for (const node of theme.querySelectorAll('link[rel="stylesheet"], style')) {
@@ -256,12 +291,12 @@ export function createRepositoryRenderer ({ appURL, fetchImpl = globalThis.fetch
       };
       const recipeBase = recipe.base || "/";
       const html = await materializeRepositoryHTML(document, baseURL, {
-        root: artifact || root, bases, mount: recipeBase, read: readURL, parser, navigate, depth,
+        root: artifact || root, bases, mount: recipeBase, read: url => read(url), parser, navigate, depth,
         resolve: (value, parent, assetRoot, mount) => repositoryAssetURL(
           /^https?:/i.test(value) ? unwrap(value, parent) : value, parent, assetRoot, mount)
       });
-      return { source: html.replace(/<\/body>/i, `<script>${activateRepositoryFrames}<\/script></body>`), kind: "html", theme: recipe.theme };
+      return { source: html.replace(/<\/body>/i, () => `<script>${activateRepositoryFrames}${previewAppearanceBootstrap()}${previewNavigationBootstrap()}<\/script></body>`), kind: "html", theme: recipe.theme };
     } finally { stack.delete(key); }
   }
-  return { prepare, read, get files () { return cache.size; } };
+  return { prepare, read, expandStoredSource, get files () { return cache.size; } };
 }

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { parseRepositoryHeader, anchorRepositoryHeader, repositoryDirectory, repositoryAssetURL, repositoryDocumentKind, createRepositoryRenderer } from "../docs/repo-render.js";
 import { encodeLinkTarget } from "../docs/link-runtime.js";
-import { compressTextV1 } from "../docs/text-compress.js";
+import { compressTextV1, compressTextV2, compressTextV3, compressTextV4 } from "../docs/text-compress.js";
 import { outputAlphabetASCII } from "../docs/alphabets.js";
 import { expandSourceIncludes } from "../docs/source-includes.js";
 
@@ -81,5 +81,26 @@ test("source and super-source expansion can consume a header without altering de
     transformSource:async text => parseRepositoryHeader(text)?.source ?? null};
   for (const mode of ["s", "hs", "ss"]) {
     expect((await expandSourceIncludes(`https://a.shel.sh/#${mode}:${encodeLinkTarget(target).payload}`, options)).text).toBe("# Modular");
+  }
+});
+
+test('compressed artifact files retain their repository-relative base in all codec versions', async () => {
+  const appURL = 'https://a.shel.sh/';
+  const base = 'https://raw.githubusercontent.com/a/b/main/dist/assets/site.js';
+  const text = "import './dependency.js';\r\n// 🐢\r\n";
+  for (const encode of [compressTextV1,compressTextV2,compressTextV3,compressTextV4]) {
+    const file = appURL + '#' + encode(text,outputAlphabetASCII,'javascript').payload;
+    const renderer = createRepositoryRenderer({appURL,fetchImpl:async()=>new Response(file)});
+    expect(await renderer.read(base)).toMatchObject({source:text,url:base,kind:'javascript'});
+    const short = appURL + '#s:' + encodeLinkTarget(base).payload;
+    expect((await renderer.read(short+'::~1:1')).source).toBe('// 🐢\r\n');
+    expect(renderer.files).toBe(1);
+  }
+});
+
+test('only standalone bare links denote compressed file contents', async () => {
+  const renderer = createRepositoryRenderer({appURL:'https://a.shel.sh/',fetchImpl:()=>{throw Error('Unexpected fetch');}});
+  for(const source of ['<a href="https://a.shel.sh/#abc">Visit</a>','See https://a.shel.sh/#abc','https://example.test/file.js']) {
+    expect(await renderer.expandStoredSource(source,'https://raw.example.test/index.html')).toEqual({source});
   }
 });

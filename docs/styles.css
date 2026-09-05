@@ -379,17 +379,52 @@ footer a { color: var(--muted); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
 }
+/* Palette/typography from CommanderTurtle/orc df42526f:
+   blog/_sass/minima/sharpscss-custom-styles.fs (dark media block). AGPL-3.0.
+   Scoped to the recipe so the shell and ordinary Markdown keep their styles. */
 .preview.lnkr-theme-jekyll, .lnkr-theme-jekyll {
-  color: #111; background: #fdfdfd; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-  line-height: 1.5; padding: clamp(1.25rem, 4vw, 3rem);
+  --ink: #e8e0d4; --muted: #c8c0b4; --subtle: #8a8478;
+  --surface: #13131a; --surface-2: #1e1e2a; --line: #1e1e28;
+  --line-strong: #2a2a38; --accent: #5ab76e;
+  color-scheme: dark; color: var(--ink); background: #0a0a0f;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+  line-height: 1.6; padding: clamp(1.25rem, 4vw, 3rem);
 }
-.lnkr-theme-jekyll :is(h1,h2,h3,h4,h5,h6) { color: #222; font-family: system-ui, sans-serif; font-weight: 500; }
-.lnkr-theme-jekyll a { color: #1756a9; }
-.lnkr-theme-jekyll blockquote { color: #626262; border-color: #ddd; }
-.lnkr-theme-jekyll :is(th,td) { border-color: #ddd; }
-.lnkr-theme-jekyll .admonition { color: #292929; background: #f3f5f8; }
-.lnkr-theme-jekyll :is(pre,code) { background: #eef; color: #282c34; }
+.lnkr-theme-jekyll :is(h1,h2,h3,h4,h5,h6) { color: var(--ink); font-weight: 600; }
+.lnkr-theme-jekyll a { color: var(--accent); }
+.lnkr-theme-jekyll a:hover { color: #7dd48f; }
+.lnkr-theme-jekyll blockquote { color: var(--muted); border-color: #4a7c59; }
+.lnkr-theme-jekyll :is(th,td) { border-color: var(--line-strong); }
+.lnkr-theme-jekyll :is(pre,code,.admonition) { background: var(--surface); color: var(--ink); }
 .lnkr-theme-jekyll pre code { background: transparent; }
-.lnkr-theme-jekyll :is(.hljs-keyword,.hljs-selector-tag,.hljs-built_in) { color: #6f42c1; }
-.lnkr-theme-jekyll :is(.hljs-string,.hljs-attr,.hljs-literal) { color: #032f62; }
-.lnkr-theme-jekyll :is(.hljs-comment,.hljs-quote) { color: #59636e; }
+.lnkr-jekyll-toc { margin: 0 0 1.5rem; border-block: 1px solid var(--line-strong, #2a2a38); }
+.lnkr-jekyll-toc > summary { cursor: pointer; padding: .8rem .6rem; color: var(--muted, #c8c0b4); font-size: .875rem; font-weight: 500; }
+.lnkr-jekyll-toc nav { max-height: 40vh; overflow: auto; padding: 0 .6rem .8rem; }
+.lnkr-jekyll-toc ul { list-style: none; margin: 0; padding: 0; }
+.lnkr-jekyll-toc a { display: block; padding: .4rem .7rem; border-radius: 8px; text-decoration: none; }
+.lnkr-jekyll-toc a:hover { background: rgba(74,124,89,.15); }
+.lnkr-jekyll-toc .toc-h3 { padding-left: 18px; font-size: .85em; }
+.lnkr-preview-tools { display: flex; justify-content: flex-end; margin-bottom: .4rem; }
+.lnkr-preview-tools button { display: inline-flex; align-items: center; padding: .45rem; color: var(--ink); border: 1px solid var(--line); background: var(--surface); border-radius: 8px; cursor: pointer; }
+.preview[data-lnkr-scheme="light"], [data-lnkr-scheme="light"] {
+  color-scheme: light; --ink: #1a1714; --muted: #5a554d; --subtle: #726c61;
+  --surface: #f0ece4; --surface-2: #e8e2d8; --line: #e0d8cc; --line-strong: #d0c8bc;
+  --accent: #2d6a3e; --gold: #8a621c; color: var(--ink); background: #faf8f5;
+}
+[data-lnkr-scheme="light"] :is(code,pre,.source-code,.code-block,.code-toolbar,.zensical-tab-list,.mermaid-source,.keys kbd) { color: var(--ink); background: var(--surface); }
+[data-lnkr-scheme="light"] pre code { background: transparent; }
+.preview[data-lnkr-scheme="light"] :is(h1,h2,h3,h4,h5,h6) { color: var(--ink); }
+[data-lnkr-scheme="light"] blockquote { color: var(--muted); }
+[data-lnkr-scheme="light"] .admonition { background: color-mix(in srgb, var(--admonition-color) 8%, #faf8f5); }
+[data-lnkr-scheme="light"] :is(.hljs-keyword,.hljs-selector-tag,.hljs-built_in) { color: #6f42c1; }
+[data-lnkr-scheme="light"] :is(.hljs-string,.hljs-attr,.hljs-literal,.hljs-number) { color: #032f62; }
+[data-lnkr-scheme="light"] :is(.hljs-comment,.hljs-quote) { color: #59636e; }
+[data-lnkr-scheme="light"] .hljs-title { color: #8250df; }
+.lnkr-theme-jekyll[data-lnkr-scheme="light"] a:hover { color: #1a4a28; }
+/* A supplied Zensical artifact owns its colors in either classic or modern. */
+[data-lnkr-palettes].frame-preview, [data-lnkr-palettes] .frame-preview {
+  --ink: var(--md-default-fg-color, #e8e0d4); --muted: var(--md-default-fg-color--light, #8a8478);
+  --accent: var(--md-typeset-a-color, #5ab76e); --surface: var(--md-code-bg-color, #13131a);
+  color: var(--ink); background: var(--md-default-bg-color, #0a0a0f);
+}
+[data-lnkr-palettes] .frame-preview :is(h1,h2,h3,h4,h5,h6), [data-lnkr-palettes].frame-preview :is(h1,h2,h3,h4,h5,h6) { color: var(--ink); }

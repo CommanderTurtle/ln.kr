@@ -297,10 +297,25 @@ theme=jekyll
 Ordinary Markdown, including the existing rich Markdown features.
 ```
 
-Zensical uses the current renderer and appearance. Jekyll supplies a small,
-Minima-inspired light skin—not a Ruby/Liquid engine. Neither theme-only form
-fetches a repository. `node` means browser-ready HTML/JavaScript, not a Node
-process, package installer, or build command.
+Zensical uses the current rich Markdown renderer. Jekyll uses sHEL's dark,
+green Minima palette and a collapsible **On this page** heading menu. It keeps
+admonitions, tabs, code tools, diagrams, media and the other Markdown features;
+it is not a Ruby/Liquid engine. Menu items use the same in-preview JavaScript
+jumps as Markdown bookmarks, without changing the compressed URL.
+
+Markdown previews have a small Lucide appearance button: **dark → light →
+system**. The expanded viewer keeps the selected appearance and the same
+control. The default is dark; a supplied Zensical artifact can instead follow
+its configured system palette. Nothing is saved to storage.
+
+The Jekyll colors, typography and menu treatment are adapted directly from
+[sHEL's Minima custom styles](https://github.com/CommanderTurtle/orc/blob/df42526fc210fc43d5461bc24c3e930d54c66eb2/blog/_sass/minima/sharpscss-custom-styles.fs),
+[header](https://github.com/CommanderTurtle/orc/blob/df42526fc210fc43d5461bc24c3e930d54c66eb2/blog/_includes/sharphtml-header.fs)
+and [heading navigation](https://github.com/CommanderTurtle/orc/blob/df42526fc210fc43d5461bc24c3e930d54c66eb2/blog/assets/js/sharpjs-main.fs)
+(AGPL-3.0). Three small inline Lucide SVGs use the vendored ISC license; no
+React/icon framework is loaded. Neither theme-only form fetches a repository.
+`node` means browser-ready HTML/JavaScript, not a Node process, package
+installer, or build command.
 
 ### Bases are not page includes
 
@@ -349,6 +364,14 @@ on its own line below the header. This is the existing modular include, not
 an implicit repository-index import. `#s:`, `#sm:`, `#sh:`, `#hs:` and their
 existing `::~start:span` slices keep their original meanings.
 
+Within this path, an index, stylesheet or script may itself contain **only a
+bare shel link** to its compressed source. That source is decoded before HTML,
+CSS or ESM processing, including imported dependencies, while its relative
+references still use the stored file's directory. All four codec versions
+work. An authored `<a href="…">` or a sentence containing a link stays content,
+not an implicit include. These pointer files can save repository storage, but
+their decoded bytes still have to be processed by the browser.
+
 ### Repository theme styling
 
 ```ini
@@ -368,6 +391,9 @@ setting in `_config.yml`/`.yaml`, or `site_dir` in `zensical.toml` /
 actually exist at the pointer. Configuration is read as data, never executed.
 Unbuilt Sass, Liquid, Python plugins, TSX and package scripts are not compiled.
 Layouts, navigation and page bodies are deliberately not copied from a theme.
+Built Zensical classic/modern styling comes from the artifact's actual CSS;
+its light/dark palette attributes are selected by the preview appearance
+button. This does not execute the target site's palette or navigation scripts.
 
 A raw file containing a recipe also works through `#ss:`. When a fetched
 recipe becomes an editable full link, an explicit `repo=` base is retained so
@@ -385,7 +411,9 @@ supported. CSS imports and asset URLs are rebased. Referenced static HTML
 iframes are prepared too; internal HTML navigation uses ordinary shel fragment
 links rather than inventing server paths.
 
-The initial repository preview is inert. Run in sandbox enables its scripts;
+The initial repository preview keeps authored scripts inert. In generated
+Markdown, a nonce allows only ln.kr's appearance and bookmark controls before
+Run. Run in sandbox enables authored scripts;
 Allow network requests still controls the running preview. Repository files
 must first be fetched to prepare it, just like existing source modules.
 The preparation cache is limited to 256 text files / 32 MiB / 16 nested frames,
@@ -407,7 +435,30 @@ Browser checks, using only a static fixture host and in-browser mocked raw files
 ```bash
 bun tests/serve-repo-fixture.js
 # Open http://127.0.0.1:4174/
+# Also test compressed index/CSS/JS files: ?compressed=1
+# And with the runner's offline policy: ?compressed=1&offline=1
 ```
+
+## Make handoff
+
+The navbar's `/make/` link simply opens `https://app.shel.sh/make`.
+**Hoist to Make**, beside Copy raw / Copy rich, instead opens the current exact
+source as a file in mk.it's existing share/download screen:
+
+| Document | Filename | MIME |
+| --- | --- | --- |
+| Markdown | `document.md` | `text/markdown` |
+| HTML | `document.html` | `text/html` |
+| JavaScript | `script.js` | `text/javascript` |
+| Plain text | `document.txt` | `text/plain` |
+
+The lazy adapter writes mk.it's unchanged `MKIT/1` metadata-and-bytes envelope,
+DEFLATEs it with the already-vendored pako and uses its existing `#share:` URL.
+UTF-8, line endings and whitespace are preserved. No upload, binary-file fetch,
+rendered toolbar export or codec change is involved. Like Copy raw, this keeps
+authored recipe/module pointers intact; it does not bake a rendered document
+or add ln.kr's module interpreter to mk.it. Long links retain the browser and
+clipboard size limitations of ordinary mk.it shares.
 
 ## Run locally
 
