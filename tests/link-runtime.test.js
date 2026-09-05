@@ -179,7 +179,7 @@ test("the image alias expands to the established editable JavaScript viewer", as
   expect(source).toContain("showViewer(decoded, payload, alphabet)");
   expect(source).toContain("window.queueMicrotask(runInParentScope)");
   expect(source).toContain("imageViewerSource(shortResourceURL(target))");
-  expect(source).toContain("expandResolvedResourceLinks(expanded.text, { appURL })");
+  expect(source).toContain("prepareResources(expanded.text)");
   expect(source).toContain('currentResolvedLink = outputLinkURL(encoded.payload, "resolved")');
   expect(source).not.toContain("lr.a.shel.sh");
 });
