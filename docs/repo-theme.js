@@ -2,9 +2,9 @@
 // sharphtml-header.fs and assets/js/sharpjs-main.fs. AGPL-3.0; see README.
 // The existing Markdown renderer owns IDs, code tools, tabs and navigation.
 export function decorateJekyllMarkdown (root) {
-  if (root.querySelector(':scope > [data-jekyll-toc]')) return;
+  if (root.querySelector(':scope > .lnkr-jekyll-layout')) return;
   const headings = [...root.querySelectorAll('h2[id],h3[id]')].filter(heading =>
-    !heading.closest('.code-block,.lnkr-module-peek,[data-jekyll-toc]'));
+    !heading.closest('.code-block,.lnkr-module-source,[data-jekyll-toc]'));
   if (!headings.length) return;
   const doc = root.ownerDocument;
   const menu = doc.createElement('details');
@@ -25,7 +25,14 @@ export function decorateJekyllMarkdown (root) {
     item.className = 'toc-' + heading.localName;
     item.append(link); list.append(item);
   }
-  nav.append(list); menu.append(summary, nav); root.prepend(menu);
+  nav.append(list); menu.append(summary, nav);
+  menu.open = true;
+  const layout = doc.createElement('div'); layout.className = 'lnkr-jekyll-layout';
+  const body = doc.createElement('div'); body.className = 'lnkr-jekyll-body';
+  for (const child of [...root.childNodes]) {
+    if (!child.classList?.contains('lnkr-preview-tools')) body.append(child);
+  }
+  layout.append(menu, body); root.append(layout);
 }
 
 // Copy the built theme's palette choices, without its site navigation/scripts.

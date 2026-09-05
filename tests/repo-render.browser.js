@@ -7,6 +7,7 @@ import { expandSourceIncludes } from "../docs/source-includes.js";
 import { compressTextV4 } from '../docs/text-compress.js';
 import { outputAlphabetASCII } from '../docs/alphabets.js';
 import { checkPreviewThemes } from './preview-theme.browser.js';
+import { checkMakeMedia } from './make-resource.browser.js';
 
 const root = "https://raw.githubusercontent.com/fixture/site/main/dist/";
 const files = {
@@ -104,5 +105,6 @@ try {
     rooted.source.includes(root+'code/extra.js') && hits.has(root+'skin/theme.css') && !hits.has(root+'code/index.html'));
   await done;
   await checkPreviewThemes(check);
+  await checkMakeMedia(check);
 } catch(error) { check("compilation",false,error.stack); }
 document.querySelector("#status").textContent=failed ? "FAILED" : "ALL BROWSER CHECKS PASSED";

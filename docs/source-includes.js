@@ -6,6 +6,7 @@ import {
   mediaLinkKind,
   splitLinkFragment
 } from "./link-runtime.js";
+import { createMakeResources, isMakeLink, makeFileDataURL } from './make-resource.js';
 
 const slicedSourceModes = new Set([
   "source",
@@ -74,6 +75,7 @@ function sourceLinkFromLine (line, appURL) {
   }
 
   const app = new URL(appURL);
+  if (isMakeLink(url.href)) return {indent:match[1],ending:match[3]||'',href:match[2],key:url.href,lineSlice:null,mode:'make',target:url.href};
   if (url.origin !== app.origin && url.hostname.toLowerCase() !== "a.shel.sh") {
     return null;
   }
@@ -102,8 +104,8 @@ function sourceLinkFromLine (line, appURL) {
   };
 }
 
-function decodedResolvedCandidate (raw, app) {
-  const marker = raw.indexOf("#lr:");
+function decodedResolvedCandidate (raw, app, superlinks = false) {
+  const marker = raw.search(superlinks ? /#(?:lr|ss):/ : /#lr:/);
   if (marker < 0) return null;
 
   for (let end = raw.length; end > marker + 4; end --) {
@@ -123,13 +125,13 @@ function decodedResolvedCandidate (raw, app) {
       return null;
     }
     const linkage = splitLinkFragment(url.hash.slice(1));
-    if (linkage.mode !== "resolved") return null;
+    if (linkage.mode !== "resolved" && !(superlinks && linkage.mode === 'super-source')) return null;
     try {
       const decoded = decodeLinkTarget(linkage.payload);
       const canonical = encodeLinkTarget(decoded.target, decoded.alphabet);
       if (canonical.payload !== decoded.payload) continue;
       const { target } = decoded;
-      return { htmlEscaped: decodedCandidate !== candidate, target, end };
+      return { htmlEscaped: decodedCandidate !== candidate, target, end, mode: linkage.mode };
     } catch {
       // The URL may include closing Markdown/CSS punctuation. Retry without it.
     }
@@ -141,28 +143,72 @@ function decodedResolvedCandidate (raw, app) {
  * Resolve #lr references only in the private runtime copy. The exact authored
  * source continues to contain its short a.shel.sh URL.
  */
-export function expandResolvedResourceLinks (source, { appURL }) {
+export function expandResolvedResourceLinks (source, { appURL, superlinks = false, resolveTarget = target => target }) {
   if (!appURL) throw new Error("Resolved resource expansion requires an app URL");
   const app = new URL(appURL);
   const text = String(source);
   return text.replace(webURLCandidatePattern, (raw, offset) => {
     let candidate = raw;
     let syntax = "";
+    if (text[offset-1] === "'") {
+      const end = raw.lastIndexOf("'");
+      if (end >= 0) { candidate = raw.slice(0,end); syntax = raw.slice(end); }
+    }
+    const quoteEntity = text.slice(0,offset).match(/(&quot;|&#34;|&#x22;)$/i)?.[1];
+    if (quoteEntity) {
+      const end = raw.indexOf(quoteEntity);
+      if (end >= 0) { candidate = raw.slice(0,end); syntax = raw.slice(end); }
+    }
     if (text[offset - 1] === "(") {
-      const closing = raw.lastIndexOf(")");
-      if (closing > raw.indexOf("#lr:")) {
+      const closing = candidate.lastIndexOf(")");
+      if (closing > raw.search(superlinks ? /#(?:lr|ss):/ : /#lr:/)) {
         candidate = raw.slice(0, closing);
         syntax = raw.slice(closing);
       }
     }
 
-    const resolved = decodedResolvedCandidate(candidate, app);
+    const resolved = decodedResolvedCandidate(candidate, app, superlinks);
     if (!resolved) return raw;
+    if (resolved.mode === 'super-source' && (!/["'(]/.test(text[offset-1]||' ') || /<a\b[^<>]*\bhref\s*=\s*["']$/i.test(text.slice(0,offset)))) return raw;
+    const destination = resolveTarget(resolved.target, resolved.mode);
+    if (destination == null) return raw;
     const target = resolved.htmlEscaped
-      ? resolved.target.replaceAll("&", "&amp;")
-      : resolved.target;
+      ? destination.replaceAll("&", "&amp;")
+      : destination;
     return `${target}${candidate.slice(resolved.end)}${syntax}`;
   });
+}
+
+/** Decode Make files only in the private runtime copy. */
+export async function prepareResolvedResourceLinks (source, {appURL, makeResources = createMakeResources()} = {}) {
+  // Hover capsules display authored code, not executable resource attributes.
+  // Leave their escaped URLs alone (including doubly escaped ampersands).
+  const capsules = [...String(source).matchAll(/<aside\b[^>]*class="lnkr-module-source"[^>]*>[\s\S]*?<\/aside>/g)];
+  if (capsules.length) {
+    let cursor=0, result='';
+    for (const capsule of capsules) {
+      result += await prepareResolvedResourceLinks(source.slice(cursor,capsule.index),{appURL,makeResources});
+      result += capsule[0]; cursor=capsule.index+capsule[0].length;
+    }
+    return result + await prepareResolvedResourceLinks(source.slice(cursor),{appURL,makeResources});
+  }
+  const targets = new Map();
+  expandResolvedResourceLinks(source,{appURL,superlinks:true,resolveTarget:(target,mode)=>{targets.set(target,mode);return null;}});
+  const resolved = new Map();
+  await Promise.all([...targets].map(async ([target,mode])=>{
+    try {
+      const file = await makeResources.get(target,{probe:mode==='resolved',wrapped:mode==='super-source'});
+      if (file) resolved.set(target,makeFileDataURL(file));
+    } catch(error) {
+      if (isMakeLink(target) || mode==='super-source') throw error;
+    }
+  }));
+  let text = expandResolvedResourceLinks(source,{appURL,superlinks:true,resolveTarget:(target,mode)=>resolved.get(target) ?? (mode==='resolved'?target:null)});
+  text = text.replace(/https?:\/\/app\.shel\.sh\/make\/?#(?:share|p):[\w%=-]+/g,(url,offset)=>{
+    if (!/["'(]/.test(text[offset-1]||' ') || /<a\b[^<>]*\bhref\s*=\s*["']$/i.test(text.slice(0,offset))) return url;
+    return makeFileDataURL(makeResources.decode(url));
+  });
+  return text;
 }
 
 function linesWithEndings (source) {
@@ -240,7 +286,7 @@ function mediaModuleMarkup (include, kind, resourceLinkForTarget) {
     throw new Error("Media source inclusion requires a route-two resource builder");
   }
   const resource = resourceLinkForTarget(include.target);
-  const encodedLabel = new URL(include.target).pathname.split("/").filter(Boolean).at(-1) || kind;
+  const encodedLabel = include.name || new URL(include.target).pathname.split("/").filter(Boolean).at(-1) || kind;
   let label = encodedLabel;
   try {
     label = decodeURIComponent(encodedLabel);
@@ -285,6 +331,7 @@ export async function expandSourceIncludes (source, {
   showModuleSource = false,
   transformSource = null,
   fetchImpl = globalThis.fetch,
+  makeResources = createMakeResources({fetchImpl,resourceURLForTarget}),
   limits = defaultLimits
 }) {
   if (!appURL || typeof resourceURLForTarget !== "function" || typeof fetchImpl !== "function") {
@@ -297,11 +344,16 @@ export async function expandSourceIncludes (source, {
     raw: new Map()
   };
   const encoder = new TextEncoder();
+  function makeRecord (file) {
+    if (!file.mediaKind && file.text === null) throw Error('This mk.it file is not a text or media module');
+    return {contentType:file.mime,mediaKind:file.mediaKind,sourceURL:file.sourceURL,text:file.text||'',makeFile:file};
+  }
 
   async function fetchSource (target) {
     if (state.raw.has(target)) return state.raw.get(target);
 
     const pending = (async () => {
+      if (isMakeLink(target)) return makeRecord(makeResources.decode(target));
       const response = await fetchImpl(resourceURLForTarget(target), {
         headers: { accept: "text/plain, text/markdown, text/css, text/javascript, */*;q=0.1" }
       });
@@ -324,6 +376,8 @@ export async function expandSourceIncludes (source, {
       if (state.bytes > limits.bytes) {
         throw new Error(`Source includes exceed the ${limits.bytes.toLocaleString()}-byte limit`);
       }
+      const file = makeResources.remember(target,text);
+      if (file) return makeRecord(file);
       return { contentType, mediaKind: "", sourceURL, text };
     })();
 
@@ -356,6 +410,20 @@ export async function expandSourceIncludes (source, {
       nestedAncestors.add(include.key);
       if (include.mode === "super-source") {
         const outer = await fetchSource(include.target);
+        const made = outer.makeFile || makeResources.remember(include.target,outer.text,true);
+        if (made) {
+          if (made.mediaKind) {
+            if (!['markdown','html'].includes(documentKind)) throw Error(`A ${made.mediaKind} module requires a Markdown or HTML document`);
+            output.push(indentSource(mediaModuleMarkup({...include,name:made.name},made.mediaKind,resourceLinkForTarget),include.indent)+include.ending);
+          } else {
+            if (made.text === null) throw Error('This mk.it file is not textual source');
+            const imported = transformSource ? await transformSource(made.text,undefined) ?? made.text : made.text;
+            let replacement = await expand(imported,depth+1,nestedAncestors);
+            if (showModuleSource && documentKind==='markdown') replacement += '\n'+modulePeek(include,made.text,'text')+'\n';
+            output.push(indentSource(replacement,include.indent)+include.ending);
+          }
+          continue;
+        }
         const prepared = transformSource && await transformSource(outer.text, outer.sourceURL);
         if (prepared !== null && prepared !== false && prepared !== undefined) {
           output.push(indentSource(prepared, include.indent) + include.ending);
@@ -379,7 +447,7 @@ export async function expandSourceIncludes (source, {
           throw new Error("A superlink source route must resolve to textual source");
         }
         let imported = applySourceLineSlice(record.text, inner.lineSlice);
-        if (transformSource) imported = await transformSource(imported, record.sourceURL) ?? imported;
+        if (transformSource) imported = await transformSource(imported, record.makeFile ? undefined : record.sourceURL) ?? imported;
         let replacement = await expand(imported, depth + 2, nestedAncestors);
         if (showModuleSource && documentKind === "markdown") {
           const spacer = replacement && !/(?:\r\n|\n|\r)$/.test(replacement) ? "\n" : "";
@@ -408,7 +476,7 @@ export async function expandSourceIncludes (source, {
         if (!["markdown", "html"].includes(documentKind)) {
           throw new Error(`A ${fetchedMedia} module requires a Markdown or HTML document`);
         }
-        let replacement = mediaModuleMarkup(include, fetchedMedia, resourceLinkForTarget);
+        let replacement = mediaModuleMarkup({...include,name:record.makeFile?.name}, fetchedMedia, resourceLinkForTarget);
         replacement = indentSource(replacement, include.indent);
         if (include.ending && !/(?:\r\n|\n|\r)$/.test(replacement)) replacement += include.ending;
         output.push(replacement);
@@ -418,7 +486,7 @@ export async function expandSourceIncludes (source, {
         record.text,
         include.lineSlice
       );
-      if (transformSource) imported = await transformSource(imported, record.sourceURL) ?? imported;
+      if (transformSource) imported = await transformSource(imported, record.makeFile ? undefined : record.sourceURL) ?? imported;
       let replacement = await expand(imported, depth + 1, nestedAncestors);
       if (showModuleSource && documentKind === "markdown") {
         const spacer = replacement && !/(?:\r\n|\n|\r)$/.test(replacement) ? "\n" : "";

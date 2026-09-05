@@ -291,8 +291,9 @@ describe("source includes", () => {
 test("the existing preview and runners use expansions while source actions stay exact", async () => {
   const main = await Bun.file(new URL("../docs/main.js", import.meta.url)).text();
   expect(main).toContain("splitSourceLineSlice(linkage.payload)");
-  expect(main).toContain("applySourceLineSlice(await response.text(), lineSlice)");
-  expect(main).toContain("currentRuntimeSource = expandResolvedResourceLinks(expanded.text, { appURL })");
+  expect(main).toContain("applySourceLineSlice(rawSource ?? await response.text(), lineSlice)");
+  expect(main).toContain("const runtime = await prepareResources(expanded.text)");
+  expect(main).toContain("currentRuntimeSource = runtime");
   expect(main).toContain('currentRuntimeKind = decoded.kind');
   expect(main).toContain('const displaySource = ["markdown", "html"].includes(currentRuntimeKind)');
   expect(main).toContain("renderContent(elements.preview, displaySource, currentRuntimeKind)");

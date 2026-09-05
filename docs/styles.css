@@ -428,3 +428,30 @@ footer a { color: var(--muted); }
   color: var(--ink); background: var(--md-default-bg-color, #0a0a0f);
 }
 [data-lnkr-palettes] .frame-preview :is(h1,h2,h3,h4,h5,h6), [data-lnkr-palettes].frame-preview :is(h1,h2,h3,h4,h5,h6) { color: var(--ink); }
+/* Reading layout follows the blog, without importing its site chrome. */
+.preview.lnkr-theme-jekyll { overflow: visible; container: lnkr-reading / inline-size; }
+.lnkr-jekyll-layout { display: grid; grid-template-columns: minmax(0,1fr); gap: 1.5rem; align-items: start; }
+.lnkr-jekyll-body { min-width: 0; }
+.lnkr-jekyll-body > :first-child { margin-top: 0; }
+.lnkr-jekyll-layout > .lnkr-jekyll-toc { position: sticky; top: .5rem; z-index: 4; margin: 0; background: var(--surface); box-shadow: 0 4px 16px #0002; }
+.lnkr-jekyll-toc a { border-left: 2px solid transparent; transition: color 120ms, background-color 120ms, border-color 120ms; }
+.lnkr-jekyll-toc a.active { color: var(--accent); border-left-color: var(--accent); background: color-mix(in srgb,var(--accent) 12%,transparent); font-weight: 650; }
+.lnkr-jekyll-body :is(h2,h3) { scroll-margin-top: 5rem; }
+.lnkr-theme-jekyll .code-block { border-radius: 8px; }
+.lnkr-theme-jekyll blockquote { border-left-width: 3px; font-style: italic; }
+@container lnkr-reading (min-width: 760px) {
+  .lnkr-jekyll-layout { grid-template-columns: minmax(0,1fr) 13rem; gap: 2rem; }
+  .lnkr-jekyll-body { grid-column: 1; grid-row: 1; }
+  .lnkr-jekyll-layout > .lnkr-jekyll-toc { grid-column: 2; grid-row: 1; top: 1rem; }
+  .lnkr-jekyll-toc nav { max-height: calc(100vh - 9rem); }
+}
+/* Real light colors, not inversion: source gradients must remain legible. */
+[data-lnkr-scheme="light"] .lnkr-module { background: var(--surface); }
+[data-lnkr-scheme="light"] .lnkr-module-token {
+  color: #285b36; border-color: #94b69b;
+  background: linear-gradient(90deg,#e1efe3,#f4f7f0 40%);
+  box-shadow: inset 0 0 0 1px #2d6a3e0a;
+}
+[data-lnkr-scheme="light"] .lnkr-module-token::before { background: #2d6a3e; box-shadow: 0 0 .5rem #2d6a3e55; }
+[data-lnkr-scheme="light"] .lnkr-module-token:is(:hover,:focus-visible) { color: #173e22; border-color: #2d6a3e; box-shadow: 0 0 1.15rem #2d6a3e22; }
+[data-lnkr-scheme="light"] .lnkr-module-source > :is(pre,.code-block) { color: #1a1714; background: #f0ece4; box-shadow: 0 12px 32px #1a171433; }
