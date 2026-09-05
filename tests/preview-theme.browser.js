@@ -3,6 +3,7 @@ import { decorateJekyllMarkdown } from '../docs/repo-theme.js';
 import { previewAppearanceBootstrap } from '../docs/preview-appearance.js';
 import { previewNavigationBootstrap } from '../docs/preview-navigation.js';
 import { createRepositoryRenderer, repositoryFrame } from '../docs/repo-render.js';
+import { checkReadingNavigation } from './reading-nav.browser.js';
 
 export async function checkPreviewThemes (check) {
   const load = (tag,attrs) => new Promise((resolve,reject) => {
@@ -88,4 +89,13 @@ export async function checkPreviewThemes (check) {
   check('light Markdown headings remain readable',getComputedStyle(root.querySelector('h1')).color==='rgb(26, 23, 20)');
   await renderContent(root,'const untouched = true;','javascript');
   check('plain code has no theme controls or modifications',!root.hasAttribute('data-lnkr-appearance') && root.textContent==='const untouched = true;');
+  const capsule=document.createElement('article');capsule.className='preview';capsule.dataset.lnkrScheme='light';
+  capsule.innerHTML='<aside class="lnkr-module-source"><a class="lnkr-module-token" href="#example">Module link</a><pre>Hidden source</pre></aside>';
+  document.body.append(capsule);
+  const token=capsule.querySelector('a');
+  check('light module gradient uses readable green text on a light surface',getComputedStyle(token).color==='rgb(40, 91, 54)' && getComputedStyle(token).backgroundImage.includes('244, 247, 240'));
+  check('module source remains hidden until hover/focus',getComputedStyle(capsule.querySelector('pre')).display==='none');
+  token.focus();
+  check('keyboard focus reveals the light-themed hover capsule',getComputedStyle(capsule.querySelector('pre')).display==='block');
+  await checkReadingNavigation(check,styles);
 }

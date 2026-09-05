@@ -6,6 +6,7 @@ import { applySourceLineSlice, splitSourceLineSlice } from "./source-includes.js
 import { decorateJekyllMarkdown, themePalette } from "./repo-theme.js";
 import { installPreviewAppearance, previewAppearanceBootstrap } from "./preview-appearance.js";
 import { previewNavigationBootstrap } from "./preview-navigation.js";
+import { readingNavigationBootstrap } from "./reading-nav.js";
 
 const firstLine = /^\uFEFF?(?:style|theme)=(jekyll|zensical|node)[ \t]*(?:\r\n|\n|\r|$)/;
 const keys = new Set(["repo", "artifact", "css", "body", "script", "base"]);
@@ -92,7 +93,7 @@ export function repositoryFrame (html) {
   // appearance/bookmark controls in that otherwise inert preview.
   const controls = html.includes('data-lnkr-appearance=');
   const nonce = controls ? crypto.randomUUID().replaceAll('-', '') : '';
-  const prefix = controls ? `<!--lnkr-controls--><meta http-equiv="Content-Security-Policy" content="script-src 'nonce-${nonce}'; script-src-elem 'nonce-${nonce}'; script-src-attr 'none'"><script nonce="${nonce}">${previewAppearanceBootstrap()}${previewNavigationBootstrap()}<\/script><!--/lnkr-controls-->` : '';
+  const prefix = controls ? `<!--lnkr-controls--><meta http-equiv="Content-Security-Policy" content="script-src 'nonce-${nonce}'; script-src-elem 'nonce-${nonce}'; script-src-attr 'none'"><script nonce="${nonce}">${previewAppearanceBootstrap()}${previewNavigationBootstrap()}${readingNavigationBootstrap()}<\/script><!--/lnkr-controls-->` : '';
   return `<iframe data-lnkr-repository sandbox="${controls ? 'allow-scripts' : ''}" title="Repository preview" style="width:100%;height:75vh;border:0" srcdoc="${escape(prefix + html)}"></iframe>`;
 }
 export const activateRepositoryFrames = `document.querySelectorAll('iframe[data-lnkr-repository]').forEach(frame=>{frame.setAttribute('sandbox','allow-scripts allow-popups allow-popups-to-escape-sandbox');const source=frame.srcdoc;const end='<!--/lnkr-controls-->';frame.srcdoc=source.startsWith('<!--lnkr-controls-->')?source.slice(source.indexOf(end)+end.length):source;});`;
@@ -295,7 +296,7 @@ export function createRepositoryRenderer ({ appURL, fetchImpl = globalThis.fetch
         resolve: (value, parent, assetRoot, mount) => repositoryAssetURL(
           /^https?:/i.test(value) ? unwrap(value, parent) : value, parent, assetRoot, mount)
       });
-      return { source: html.replace(/<\/body>/i, () => `<script>${activateRepositoryFrames}${previewAppearanceBootstrap()}${previewNavigationBootstrap()}<\/script></body>`), kind: "html", theme: recipe.theme };
+      return { source: html.replace(/<\/body>/i, () => `<script>${activateRepositoryFrames}${previewAppearanceBootstrap()}${previewNavigationBootstrap()}${readingNavigationBootstrap()}<\/script></body>`), kind: "html", theme: recipe.theme };
     } finally { stack.delete(key); }
   }
   return { prepare, read, expandStoredSource, get files () { return cache.size; } };

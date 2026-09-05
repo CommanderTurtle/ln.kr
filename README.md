@@ -298,14 +298,20 @@ Ordinary Markdown, including the existing rich Markdown features.
 ```
 
 Zensical uses the current rich Markdown renderer. Jekyll uses sHEL's dark,
-green Minima palette and a collapsible **On this page** heading menu. It keeps
+green Minima palette and a collapsible **On this page** heading menu. The menu
+stays visible while reading, highlights the current visible section as you
+scroll in either preview, and becomes a right-hand sidebar in wider previews.
+Its entries track h2/h3 headings, including the existing JavaScript bookmark
+jumps. Only the highlighting transitions; document scrolling is not animated.
+Jekyll mode also uses Minima-like code cards and blockquotes. It keeps
 admonitions, tabs, code tools, diagrams, media and the other Markdown features;
 it is not a Ruby/Liquid engine. Menu items use the same in-preview JavaScript
 jumps as Markdown bookmarks, without changing the compressed URL.
 
 Markdown previews have a small Lucide appearance button: **dark → light →
 system**. The expanded viewer keeps the selected appearance and the same
-control. The default is dark; a supplied Zensical artifact can instead follow
+control. Glowing module links and their hover-only source capsules have explicit
+light colors, rather than an inverted dark gradient. The default is dark; a supplied Zensical artifact can instead follow
 its configured system palette. Nothing is saved to storage.
 
 The Jekyll colors, typography and menu treatment are adapted directly from
@@ -459,6 +465,37 @@ rendered toolbar export or codec change is involved. Like Copy raw, this keeps
 authored recipe/module pointers intact; it does not bake a rendered document
 or add ln.kr's module interpreter to mk.it. Long links retain the browser and
 clipboard size limitations of ordinary mk.it shares.
+
+### Make files as modules and resources
+
+The reverse direction reads existing `https://app.shel.sh/make/#share:…` and
+`#p:…` links in-browser, using that same envelope and vendored DEFLATE decoder.
+No request to Make, upload, proxy, new route or compression-engine change is
+needed. Text keeps its UTF-8 contents; media keeps the original bytes and MIME.
+
+- A Make link on its own source line, or a route-three/four link pointing to a
+  readable raw file containing **only that Make URL**, expands as a module.
+  Text follows the normal source/include path, including line slices on the
+  outer source link. Images, PDF, audio and video reuse the existing media
+  modules and PDF Blob loader. Other binary formats are not text modules.
+- **Copy superlink** also recognizes these one-line Make pointer files. Its
+  module form decodes the file, including an explicitly wrapped single anchor
+  or Markdown link. An ordinary authored anchor remains an ordinary link.
+- In resource positions such as `src` or CSS `url(...)`, a Make URL or `#lr:`
+  pointing to it (or a readable raw Make pointer) becomes a data URL **only in
+  the private runtime copy**. `#ss:` Make-pointer resources work there too.
+  Exact source, Copy raw, Edit a copy and the hover capsule retain their links.
+  Image/PDF/media viewer buttons also recognize direct Make shares and verified
+  Make pointer files, and still generate short `#lr:` source references.
+
+Opening `#lr:` in the address bar still immediately redirects, as before;
+opening a Make superlink still opens its destination. Byte substitution is
+specific to source rendered inside ln.kr, not an external site's `<img>`.
+Ordinary media URLs are not probed, and raw Make pointer reads are cached per
+render. Make decoding is capped at 32 MiB per render, with at most 128 pointer
+probes and a 15-second probe timeout. Native browser codec/PDF support still
+applies. Local `data:`/`blob:` media can render with network access disabled;
+fetching a remote pointer still requires a browser-readable response.
 
 ## Run locally
 

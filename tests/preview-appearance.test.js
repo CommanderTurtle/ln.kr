@@ -1,10 +1,12 @@
 import { expect, test } from 'bun:test';
 import { previewAppearanceBootstrap } from '../docs/preview-appearance.js';
 import { activateRepositoryFrames, repositoryFrame } from '../docs/repo-render.js';
+import {readingNavigationBootstrap} from '../docs/reading-nav.js';
 
 test('serialized preview controls and frame activation are executable JavaScript', () => {
   expect(() => new Function(previewAppearanceBootstrap())).not.toThrow();
   expect(() => new Function(activateRepositoryFrames)).not.toThrow();
+  expect(() => new Function(readingNavigationBootstrap())).not.toThrow();
 });
 
 test('initial HTML remains inert; generated Markdown permits only nonce-bound controls', () => {

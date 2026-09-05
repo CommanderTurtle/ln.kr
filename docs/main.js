@@ -10,8 +10,6 @@ import {
   encodeLinkTarget,
   extractSingleLinkDocument,
   isTextualSourceResponse,
-  isImageLinkTarget,
-  isPdfLinkTarget,
   mediaLinkKind,
   linkPrefixForMode,
   resolvedResourceURL,
@@ -26,9 +24,12 @@ import { previewNavigationBootstrap } from "./preview-navigation.js";
 import { hasRepositoryHeader, anchorRepositoryHeader, repositoryDocumentKind, createRepositoryRenderer, repositoryFrame, activateRepositoryFrames } from "./repo-render.js";
 import { decorateJekyllMarkdown } from "./repo-theme.js";
 import { previewAppearanceBootstrap } from "./preview-appearance.js";
+import { installReadingNavigation, readingNavigationBootstrap } from "./reading-nav.js";
+import { createMakeResources, decodeMakeFile, isMakeLink } from './make-resource.js';
 import {
   applySourceLineSlice,
   expandResolvedResourceLinks,
+  prepareResolvedResourceLinks,
   expandSourceIncludes,
   splitSourceLineSlice
 } from "./source-includes.js";
@@ -456,6 +457,7 @@ async function generateLink () {
 }
 
 async function probeSuperlink (target, payload, generation) {
+  if (isMakeLink(target)) return;
   try {
     const response = await fetch(sourceURLForTarget(target), {
       headers: { accept: "text/plain, text/html;q=0.9, */*;q=0.1" },
@@ -467,6 +469,12 @@ async function probeSuperlink (target, payload, generation) {
     if ((!inner && !hasRepositoryHeader(source)) || generation !== superlinkProbeGeneration) return;
     currentSuperLink = outputLinkURL(payload, "super-source");
     elements.copySuper.hidden = false;
+    if (isMakeLink(inner)) {
+      const kind = decodeMakeFile(inner).mediaKind;
+      elements.copyImage.hidden = kind !== 'image';
+      elements.copyPdf.hidden = kind !== 'pdf';
+      elements.copyMedia.hidden = !['audio','video'].includes(kind);
+    }
   } catch {
     // Superlink discovery is optional and never delays ordinary link creation.
   }
@@ -502,10 +510,10 @@ async function generateURLLinks () {
 
     elements.guardedOutput.textContent = currentGuardedLink;
     elements.guardedOutput.href = currentGuardedLink;
-    const mediaKind = mediaLinkKind(encoded.target);
-    elements.copyImage.hidden = !isImageLinkTarget(encoded.target);
+    const mediaKind = isMakeLink(encoded.target) ? decodeMakeFile(encoded.target).mediaKind : mediaLinkKind(encoded.target);
+    elements.copyImage.hidden = mediaKind !== 'image';
     elements.copyMedia.hidden = !["video", "audio"].includes(mediaKind);
-    elements.copyPdf.hidden = !isPdfLinkTarget(encoded.target);
+    elements.copyPdf.hidden = mediaKind !== 'pdf';
     elements.linkQueryWarning.hidden = new URL(encoded.target).searchParams.size <= 1;
 
     const symbols = countAlphabetSymbols(encoded.payload, alphabet);
@@ -616,20 +624,34 @@ async function resolveSourceLink (target, mode, generation, lineSlice = null) {
   showToast("Resolving source…");
 
   try {
-    const response = await fetch(direct, {
+    const makeResources = createMakeResources();
+    let made = isMakeLink(target) ? makeResources.decode(target) : null;
+    const response = made ? new Response(made.bytes,{headers:{'content-type':made.mime}}) : await fetch(direct, {
       headers: { accept: "text/html, application/xhtml+xml, text/plain;q=0.9, */*;q=0.1" }
     });
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`.trim());
-    const sourceURL = response.headers.get("x-lnkr-source-url") || response.url || target;
-    const contentType = response.headers.get("content-type") || "";
+    let sourceURL = made?.sourceURL || response.headers.get("x-lnkr-source-url") || response.url || target;
+    let contentType = made?.mime || response.headers.get("content-type") || "";
+    let rawSource = made?.text;
+    if (!made && isTextualSourceResponse(sourceURL,contentType)) {
+      rawSource = await response.text(); made = makeResources.remember(target,rawSource);
+      if (made) { sourceURL=made.sourceURL; contentType=made.mime; rawSource=made.text; }
+    }
+    if (made?.mediaKind) {
+      const link = outputLinkURL(encodeLinkTarget(target).payload,'source');
+      const module = await expandSourceIncludes(link,{appURL:rootURL(),documentKind:'html',resourceURLForTarget:sourceURLForTarget,resourceLinkForTarget:shortResourceURL,makeResources});
+      if (generation !== sourceResolveGeneration) return;
+      const encoded = compressTextV1(module.text,outputAlphabetASCII,'html');
+      history.replaceState(null,'',outputURL(encoded.payload,live?'html':'')); decodeLocation(); return;
+    }
     if (!isTextualSourceResponse(sourceURL, contentType)) {
       throw new Error(`The source is binary (${contentType || "unknown media type"})`);
     }
-    const fetchedSource = applySourceLineSlice(await response.text(), lineSlice);
+    const fetchedSource = applySourceLineSlice(rawSource ?? await response.text(), lineSlice);
     const kind = repositoryDocumentKind(fetchedSource, requestedKind === "auto"
       ? sourceKindHint(sourceURL, contentType) || detectKind(fetchedSource)
       : requestedKind);
-    const source = hasRepositoryHeader(fetchedSource) ? anchorRepositoryHeader(fetchedSource, sourceURL) : kind === "html"
+    const source = hasRepositoryHeader(fetchedSource) ? (made ? fetchedSource : anchorRepositoryHeader(fetchedSource, sourceURL)) : kind === "html" && !made
       ? anchorResolvedHTML(fetchedSource, sourceURL)
       : fetchedSource;
     if (generation !== sourceResolveGeneration) return;
@@ -842,8 +864,10 @@ function mediaViewerSource (target, kind) {
 })(${JSON.stringify(target)});`;
 }
 
-function showMediaAlias (target) {
-  const kind = mediaLinkKind(target);
+async function showMediaAlias (target) {
+  const generation = sourceResolveGeneration;
+  const kind = mediaLinkKind(target) || (await createMakeResources().get(target,{probe:true}))?.mediaKind;
+  if (generation !== sourceResolveGeneration) return;
   if (!['video', 'audio'].includes(kind)) {
     throw new Error("The media route requires an audio or video URL");
   }
@@ -1062,8 +1086,11 @@ function showViewer (decoded, payload, alphabet) {
   elements.sourceView.textContent = decoded.text;
   const generation = ++renderGeneration;
   const appURL = rootURL();
+  const makeResources = createMakeResources({resourceURLForTarget:sourceURLForTarget});
+  const prepareResources = text => prepareResolvedResourceLinks(text,{appURL,makeResources});
   const includeOptions = {
     appURL,
+    makeResources,
     documentKind: decoded.kind,
     resourceLinkForTarget: shortResourceURL,
     resourceURLForTarget: sourceURLForTarget,
@@ -1084,10 +1111,10 @@ function showViewer (decoded, payload, alphabet) {
   const repositories = createRepositoryRenderer({
     appURL,
     styles: collectFrameStyles,
-    expandModules: async (text, kind) => expandResolvedResourceLinks((await expandSourceIncludes(text, { ...includeOptions, documentKind: kind })).text, { appURL }),
+    expandModules: async (text, kind) => prepareResources((await expandSourceIncludes(text, { ...includeOptions, documentKind: kind })).text),
     renderMarkdown: async text => {
       const node = document.createElement("article");
-      await renderContent(node, expandResolvedResourceLinks(text, { appURL }), "markdown");
+      await renderContent(node, await prepareResources(text), "markdown");
       return node.innerHTML;
     }
   });
@@ -1102,9 +1129,11 @@ function showViewer (decoded, payload, alphabet) {
       updateRunMode();
     }
     return expandSourceIncludes(prepared?.source ?? decoded.text, includeOptions);
-  }).then(expanded => {
+  }).then(async expanded => {
     if (generation !== renderGeneration) return;
-    currentRuntimeSource = expandResolvedResourceLinks(expanded.text, { appURL });
+    const runtime = await prepareResources(expanded.text);
+    if (generation !== renderGeneration) return;
+    currentRuntimeSource = runtime;
     if (currentRepositoryDocument?.kind === "html") {
       elements.preview.innerHTML = repositoryFrame(currentRuntimeSource);
       updateRunMode();
@@ -1117,6 +1146,8 @@ function showViewer (decoded, payload, alphabet) {
     return renderContent(elements.preview, displaySource, currentRuntimeKind)
       .then(() => {
         if (currentRepositoryDocument?.theme === 'jekyll') decorateJekyllMarkdown(elements.preview);
+        if (currentRepositoryDocument?.theme === 'jekyll') installReadingNavigation(elements.preview);
+        elements.preview.querySelectorAll('.lnkr-theme-jekyll').forEach(installReadingNavigation);
         return hydratePdfModules(elements.preview);
       });
   })
@@ -1176,7 +1207,7 @@ function decodeLocation () {
         else if (linkage.mode === "super-source") void showSuperLink(target, navigationGeneration);
         else if (linkage.mode === "framed") showFramedLink(target);
         else if (linkage.mode === "image") showImageAlias(target);
-        else if (linkage.mode === "media") showMediaAlias(target);
+        else if (linkage.mode === "media") void showMediaAlias(target).catch(error=>showToast(error.message || String(error),'error'));
         else if (linkage.mode === "pdf") showPdfAlias(target);
         else if (linkage.mode === "source" || linkage.mode === "source-live" ||
           linkage.mode.startsWith("source-")) {
@@ -1296,6 +1327,7 @@ function documentLinkBootstrap (token, copyCode = false) {
   }).observe(document.documentElement, { childList: true, subtree: true });
   ${zensicalInteractionBootstrap()}
   ${previewAppearanceBootstrap()}
+  ${readingNavigationBootstrap()}
   ${copyCode ? previewNavigationBootstrap() : ""}
   ${copyCode ? `const copyText = async text => {
     try {
@@ -1370,8 +1402,8 @@ async function runCurrentDocument ({ expand = false, scroll = true } = {}) {
   elements.runnerLog.textContent = "";
   updateRunMode();
 
-  const policy = "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'" +
-    (currentRepositoryDocument || repositoryModules ? " data: blob:; connect-src data:; frame-src data: blob: about:; style-src-elem 'unsafe-inline' data: blob:" : "");
+  const policy = "default-src 'none'; img-src data: blob:; media-src data: blob:; connect-src data: blob:; frame-src data: blob: about:; style-src 'unsafe-inline'; script-src 'unsafe-inline'" +
+    (currentRepositoryDocument || repositoryModules ? " data: blob:; style-src-elem 'unsafe-inline' data: blob:" : "");
   if (currentRuntimeKind === "html") {
     const allowNetwork = elements.network.checked;
     elements.runnerFrame.setAttribute("sandbox", allowNetwork
