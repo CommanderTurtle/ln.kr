@@ -3,6 +3,7 @@ import {
   zensicalInteractionBootstrap
 } from "./zensical.js";
 import { installPreviewNavigation } from "./preview-navigation.js";
+import { installPreviewAppearance } from "./preview-appearance.js";
 
 let mermaidLoad = null;
 let mermaidReady = false;
@@ -330,6 +331,8 @@ export async function renderMarkdown (container, source) {
     decorateCodeBlock(code.parentElement, languageOf(code));
   }
   decorateCodeAnnotations(container);
+  installPreviewAppearance(container);
+  container.querySelectorAll('[data-lnkr-appearance]').forEach(installPreviewAppearance);
   if (zensical.hasMath) {
     try {
       const mathJax = await loadMathJax();
@@ -345,6 +348,8 @@ export { zensicalInteractionBootstrap };
 const javascriptPattern = /(\/\*[\s\S]*?\*\/|\/\/[^\n]*|`(?:\\.|[^`])*`|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b(?:const|let|var|function|return|class|new|if|else|for|while|switch|case|break|continue|try|catch|finally|throw|async|await|import|export|from|true|false|null|undefined|this|typeof|instanceof)\b|\b(?:0x[\da-f]+|\d+(?:\.\d+)?)\b)/gi;
 
 export function renderCode (container, source, language = "text") {
+  delete container.dataset.lnkrAppearance;
+  delete container.dataset.lnkrScheme;
   container.replaceChildren();
   const pre = document.createElement("pre");
   pre.className = "source-code";

@@ -24,6 +24,8 @@ import { compressTextV1, compressTextV2, compressTextV3, compressTextV4, detectK
 import { renderContent, zensicalInteractionBootstrap } from "./render.js";
 import { previewNavigationBootstrap } from "./preview-navigation.js";
 import { hasRepositoryHeader, anchorRepositoryHeader, repositoryDocumentKind, createRepositoryRenderer, repositoryFrame, activateRepositoryFrames } from "./repo-render.js";
+import { decorateJekyllMarkdown } from "./repo-theme.js";
+import { previewAppearanceBootstrap } from "./preview-appearance.js";
 import {
   applySourceLineSlice,
   expandResolvedResourceLinks,
@@ -108,6 +110,7 @@ const elements = {
   edit: document.querySelector("#edit-source"),
   copyRaw: document.querySelector("#copy-raw"),
   copyRich: document.querySelector("#copy-rich"),
+  hoistMake: document.querySelector("#hoist-make"),
   copyJSFuck: document.querySelector("#copy-jsfuck"),
   copyInvisible: document.querySelector("#copy-invisible"),
   runScopeControl: document.querySelector("#run-scope-control"),
@@ -1066,13 +1069,16 @@ function showViewer (decoded, payload, alphabet) {
     resourceURLForTarget: sourceURLForTarget,
     showModuleSource: true,
     transformSource: async (source, sourceURL) => {
-      if (!hasRepositoryHeader(source)) return null;
+      const stored = await repositories.expandStoredSource(source, sourceURL);
+      if (!hasRepositoryHeader(stored.source)) return stored.source === source ? null : stored.source;
+      source = stored.source;
       const prepared = await repositories.prepare(source, "markdown", sourceURL);
       if (generation === renderGeneration) repositoryModules = true;
       if (prepared.kind === "html") return repositoryFrame(prepared.source);
       const node = document.createElement("article");
       await renderContent(node, prepared.source, prepared.kind);
-      return `<section class="lnkr-theme-${prepared.theme}">${node.innerHTML}</section>`;
+      if (prepared.theme === 'jekyll') decorateJekyllMarkdown(node);
+      return `<section class="preview lnkr-theme-${prepared.theme}" data-lnkr-appearance="dark">${node.innerHTML}</section>`;
     }
   };
   const repositories = createRepositoryRenderer({
@@ -1109,7 +1115,10 @@ function showViewer (decoded, payload, alphabet) {
       ? currentRuntimeSource
       : decoded.text;
     return renderContent(elements.preview, displaySource, currentRuntimeKind)
-      .then(() => hydratePdfModules(elements.preview));
+      .then(() => {
+        if (currentRepositoryDocument?.theme === 'jekyll') decorateJekyllMarkdown(elements.preview);
+        return hydratePdfModules(elements.preview);
+      });
   })
     .catch(error => {
       if (generation !== renderGeneration) return;
@@ -1286,6 +1295,7 @@ function documentLinkBootstrap (token, copyCode = false) {
     }
   }).observe(document.documentElement, { childList: true, subtree: true });
   ${zensicalInteractionBootstrap()}
+  ${previewAppearanceBootstrap()}
   ${copyCode ? previewNavigationBootstrap() : ""}
   ${copyCode ? `const copyText = async text => {
     try {
@@ -1386,7 +1396,7 @@ async function runCurrentDocument ({ expand = false, scroll = true } = {}) {
       ? ""
       : `<meta http-equiv="Content-Security-Policy" content="${policy}">`;
     const bootstrap = `<script>${documentLinkBootstrap(runToken, true)}${repositoryModules ? `addEventListener('DOMContentLoaded',()=>{${activateRepositoryFrames}});` : ""}<\/script>`;
-    elements.runnerFrame.srcdoc = `<!doctype html><html><head>${meta}<style>${collectFrameStyles()}</style>${bootstrap}</head><body><article class="preview frame-preview${currentRepositoryDocument?.theme === "jekyll" ? " lnkr-theme-jekyll" : ""}">${elements.preview.innerHTML}</article></body></html>`;
+    elements.runnerFrame.srcdoc = `<!doctype html><html><head>${meta}<style>${collectFrameStyles()}</style>${bootstrap}</head><body><article data-lnkr-appearance="${elements.preview.dataset.lnkrAppearance || 'dark'}" class="preview frame-preview${currentRepositoryDocument?.theme === "jekyll" ? " lnkr-theme-jekyll" : ""}">${elements.preview.innerHTML}</article></body></html>`;
     revealRunner({ expand, scroll });
     return;
   }
@@ -1593,6 +1603,20 @@ elements.copyRaw.addEventListener("click", async () => {
   }
 });
 elements.copyRich.addEventListener("click", copyRich);
+elements.hoistMake.addEventListener("click", async () => {
+  if (!currentDocument) return;
+  const { text, kind } = currentDocument;
+  elements.hoistMake.disabled = true;
+  try {
+    const { makeShareURL } = await import("./make-share.js");
+    // Like Copy raw: preserve the author's bytes, not rendered HTML/toolbars.
+    location.assign(makeShareURL(text, kind));
+  } catch (error) {
+    showToast(error.message || String(error), "error");
+  } finally {
+    elements.hoistMake.disabled = false;
+  }
+});
 elements.copyJSFuck.addEventListener("click", async () => {
   if (!window.JSFuck) return showToast("JSFuck encoder did not load", "error");
   elements.copyJSFuck.disabled = true;
