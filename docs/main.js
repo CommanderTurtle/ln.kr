@@ -23,9 +23,10 @@ import { renderContent, zensicalInteractionBootstrap } from "./render.js";
 import { previewNavigationBootstrap } from "./preview-navigation.js";
 import { hasRepositoryHeader, anchorRepositoryHeader, repositoryDocumentKind, createRepositoryRenderer, repositoryFrame, activateRepositoryFrames } from "./repo-render.js";
 import { decorateJekyllMarkdown } from "./repo-theme.js";
-import { previewAppearanceBootstrap } from "./preview-appearance.js";
+import { installPreviewAppearance, previewAppearanceBootstrap } from "./preview-appearance.js";
 import { installReadingNavigation, readingNavigationBootstrap } from "./reading-nav.js";
 import { createMakeResources, decodeMakeFile, isMakeLink } from './make-resource.js';
+import { makeShareURL } from './make-share.js';
 import {
   applySourceLineSlice,
   expandResolvedResourceLinks,
@@ -120,6 +121,8 @@ const elements = {
   network: document.querySelector("#run-network"),
   run: document.querySelector("#run-code"),
   runner: document.querySelector("#runner"),
+  previewAppearance: document.querySelector("#preview-appearance"),
+  runnerAppearance: document.querySelector("#runner-appearance"),
   runnerFrame: document.querySelector("#runner-frame"),
   runnerStatus: document.querySelector("#runner-status"),
   runnerLog: document.querySelector("#runner-log"),
@@ -1034,6 +1037,25 @@ function stopRunner () {
   elements.runnerLog.textContent = "";
 }
 
+function sendRunnerAppearance () {
+  if (runToken) elements.runnerFrame.contentWindow?.postMessage({
+    source: 'ln.kr-theme-set', token: runToken, mode: elements.runner.dataset.lnkrAppearance
+  }, '*');
+}
+
+function mountPreviewAppearance () {
+  elements.previewAppearance.hidden = !elements.preview.hasAttribute('data-lnkr-appearance');
+  if (elements.previewAppearance.hidden) return;
+  installPreviewAppearance(elements.preview, {
+    toolbar: elements.previewAppearance, chrome: elements.preview.closest('.document-shell'),
+    onChange: mode => {
+      if (!elements.runner.hidden && elements.runner.__lnkrAppearance && elements.runner.dataset.lnkrAppearance !== mode) {
+        elements.runner.__lnkrAppearance(mode);
+      }
+    }
+  });
+}
+
 function updateRunMode () {
   const native = currentRuntimeKind === "javascript" && elements.parentScope.checked;
   const documentViewer = ["markdown", "html"].includes(currentRuntimeKind);
@@ -1070,6 +1092,8 @@ async function hydratePdfModules (container) {
 }
 
 function showViewer (decoded, payload, alphabet) {
+  elements.previewAppearance.hidden = true;
+  delete elements.preview.closest('.document-shell').dataset.lnkrScheme;
   hidePrimarySections();
   currentDocument = decoded;
   currentRuntimeSource = decoded.text;
@@ -1145,6 +1169,7 @@ function showViewer (decoded, payload, alphabet) {
       : decoded.text;
     return renderContent(elements.preview, displaySource, currentRuntimeKind)
       .then(() => {
+        mountPreviewAppearance();
         if (currentRepositoryDocument?.theme === 'jekyll') decorateJekyllMarkdown(elements.preview);
         if (currentRepositoryDocument?.theme === 'jekyll') installReadingNavigation(elements.preview);
         elements.preview.querySelectorAll('.lnkr-theme-jekyll').forEach(installReadingNavigation);
@@ -1303,7 +1328,7 @@ function collectFrameStyles () {
   return rules.join("\n");
 }
 
-function documentLinkBootstrap (token, copyCode = false) {
+function documentLinkBootstrap (token, copyCode = false, appearance = null) {
   const serializedToken = JSON.stringify(token);
   return `
 (() => {
@@ -1326,7 +1351,7 @@ function documentLinkBootstrap (token, copyCode = false) {
     }
   }).observe(document.documentElement, { childList: true, subtree: true });
   ${zensicalInteractionBootstrap()}
-  ${previewAppearanceBootstrap()}
+  ${previewAppearanceBootstrap(appearance)}
   ${readingNavigationBootstrap()}
   ${copyCode ? previewNavigationBootstrap() : ""}
   ${copyCode ? `const copyText = async text => {
@@ -1402,6 +1427,22 @@ async function runCurrentDocument ({ expand = false, scroll = true } = {}) {
   elements.runnerLog.textContent = "";
   updateRunMode();
 
+  const themed = currentRuntimeKind === 'markdown' ||
+    Boolean(currentRepositoryDocument && currentRuntimeSource.includes('data-lnkr-appearance='));
+  elements.runnerAppearance.hidden = !themed;
+  let appearance = null;
+  if (themed) {
+    elements.runner.dataset.lnkrAppearance = elements.preview.dataset.lnkrAppearance || 'dark';
+    installPreviewAppearance(elements.runner, {toolbar: elements.runnerAppearance, onChange: mode => {
+      if (elements.preview.hasAttribute('data-lnkr-appearance') && elements.preview.dataset.lnkrAppearance !== mode) elements.preview.__lnkrAppearance?.(mode);
+      sendRunnerAppearance();
+    }});
+    appearance = {token:runToken,mode:elements.runner.dataset.lnkrAppearance};
+  } else {
+    delete elements.runner.dataset.lnkrAppearance;
+    delete elements.runner.dataset.lnkrScheme;
+  }
+
   const policy = "default-src 'none'; img-src data: blob:; media-src data: blob:; connect-src data: blob:; frame-src data: blob: about:; style-src 'unsafe-inline'; script-src 'unsafe-inline'" +
     (currentRepositoryDocument || repositoryModules ? " data: blob:; style-src-elem 'unsafe-inline' data: blob:" : "");
   if (currentRuntimeKind === "html") {
@@ -1410,7 +1451,7 @@ async function runCurrentDocument ({ expand = false, scroll = true } = {}) {
       ? "allow-scripts allow-popups allow-popups-to-escape-sandbox"
       : "allow-scripts");
     const runtimeHTML = currentRepositoryDocument
-      ? currentRuntimeSource.replace(/<\/body>/i, `<script>${documentLinkBootstrap(runToken, true)}<\/script></body>`)
+      ? currentRuntimeSource.replace(/<\/body>/i, `<script>${documentLinkBootstrap(runToken, true, appearance)}<\/script></body>`)
       : currentRuntimeSource;
     elements.runnerFrame.srcdoc = allowNetwork
       ? runtimeHTML
@@ -1427,7 +1468,7 @@ async function runCurrentDocument ({ expand = false, scroll = true } = {}) {
     const meta = allowNetwork
       ? ""
       : `<meta http-equiv="Content-Security-Policy" content="${policy}">`;
-    const bootstrap = `<script>${documentLinkBootstrap(runToken, true)}${repositoryModules ? `addEventListener('DOMContentLoaded',()=>{${activateRepositoryFrames}});` : ""}<\/script>`;
+    const bootstrap = `<script>${documentLinkBootstrap(runToken, true, appearance)}${repositoryModules ? `addEventListener('DOMContentLoaded',()=>{${activateRepositoryFrames}});` : ""}<\/script>`;
     elements.runnerFrame.srcdoc = `<!doctype html><html><head>${meta}<style>${collectFrameStyles()}</style>${bootstrap}</head><body><article data-lnkr-appearance="${elements.preview.dataset.lnkrAppearance || 'dark'}" class="preview frame-preview${currentRepositoryDocument?.theme === "jekyll" ? " lnkr-theme-jekyll" : ""}">${elements.preview.innerHTML}</article></body></html>`;
     revealRunner({ expand, scroll });
     return;
@@ -1635,14 +1676,14 @@ elements.copyRaw.addEventListener("click", async () => {
   }
 });
 elements.copyRich.addEventListener("click", copyRich);
-elements.hoistMake.addEventListener("click", async () => {
+elements.hoistMake.addEventListener("click", () => {
   if (!currentDocument) return;
   const { text, kind } = currentDocument;
   elements.hoistMake.disabled = true;
   try {
-    const { makeShareURL } = await import("./make-share.js");
     // Like Copy raw: preserve the author's bytes, not rendered HTML/toolbars.
-    location.assign(makeShareURL(text, kind));
+    // Build on this click, without awaiting and losing the new-tab gesture.
+    window.open(makeShareURL(text, kind), '_blank', 'noopener,noreferrer');
   } catch (error) {
     showToast(error.message || String(error), "error");
   } finally {
@@ -1717,6 +1758,7 @@ window.addEventListener("keydown", event => {
     setFramedExpanded(false);
     return;
   }
+  if (data.source === 'ln.kr-theme-ready') { sendRunnerAppearance(); return; }
   if (event.key === "Escape" && elements.runner.classList.contains("runner-expanded")) {
     setRunnerExpanded(false);
   }

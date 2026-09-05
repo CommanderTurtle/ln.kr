@@ -25,6 +25,8 @@ export async function checkReadingNavigation(check,styles) {
         const tick=()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
         const nav=document.querySelector('[data-jekyll-toc]'), heading=document.getElementById('second');
         const scroller=document.getElementById('scroller');
+        const deadline=Date.now()+2000;
+        while(!heading.getBoundingClientRect().width && Date.now()<deadline) await new Promise(r=>setTimeout(r,20));
         await tick();
         const first=nav.querySelector('[aria-current]')?.getAttribute('href');
         const geometry=[...document.querySelectorAll('.lnkr-jekyll-body h2')].map(h=>[h.id,h.getBoundingClientRect().top]);

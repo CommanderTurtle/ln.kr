@@ -21,7 +21,7 @@
     <span class="header-rule" aria-hidden="true"></span>
     <p id="site-mode-label">text in the link</p>
     <button id="link-mode-toggle" class="header-button mode-toggle" type="button" aria-pressed="false">Link</button>
-    <a class="header-button" href="https://app.shel.sh/make">/make/</a>
+    <a class="header-button" href="https://app.shel.sh/make" target="_blank" rel="noopener noreferrer">/make/</a>
     <div class="header-actions">
       <a class="header-link" href="https://github.com/CommanderTurtle/ln.kr" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
       <button id="about-open" class="header-button" type="button" aria-haspopup="dialog">About</button>
@@ -232,9 +232,12 @@
       </div>
 
       <div class="document-shell">
+        <div class="document-head">
         <div class="tabs" role="tablist" aria-label="Document view">
           <button id="tab-rendered" role="tab" aria-selected="true" type="button">Rendered</button>
           <button id="tab-source" role="tab" aria-selected="false" type="button">Exact source</button>
+        </div>
+        <div id="preview-appearance" class="appearance-slot" hidden></div>
         </div>
         <article id="preview" class="preview"></article>
         <pre id="source-view" class="source-view" hidden></pre>
@@ -248,6 +251,7 @@
             <small id="runner-status">Scripts allowed · network blocked · unique origin</small>
           </div>
           <div class="runner-actions">
+            <div id="runner-appearance" class="appearance-slot" hidden></div>
             <button id="expand-run" type="button" aria-expanded="false">Expand viewer</button>
             <button id="stop-run" type="button">Stop &amp; clear</button>
             <button id="collapse-run" class="runner-close" type="button" aria-label="Close expanded viewer" hidden>×</button>

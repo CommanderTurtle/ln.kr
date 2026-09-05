@@ -309,8 +309,12 @@ it is not a Ruby/Liquid engine. Menu items use the same in-preview JavaScript
 jumps as Markdown bookmarks, without changing the compressed URL.
 
 Markdown previews have a small Lucide appearance button: **dark → light →
-system**. The expanded viewer keeps the selected appearance and the same
-control. Glowing module links and their hover-only source capsules have explicit
+system**. It lives beside the Rendered/Exact source tabs and in the **Isolated
+preview** window header, not in the document flow. The viewer and its chrome
+stay in sync; light mode uses soft white-grey window controls and a matching
+iframe canvas. Toggling does not reload the document or move its scroll position.
+Standalone serialized previews retain their own control when no host owns it.
+Glowing module links and their hover-only source capsules have explicit
 light colors, rather than an inverted dark gradient. The default is dark; a supplied Zensical artifact can instead follow
 its configured system palette. Nothing is saved to storage.
 
@@ -447,7 +451,7 @@ bun tests/serve-repo-fixture.js
 
 ## Make handoff
 
-The navbar's `/make/` link simply opens `https://app.shel.sh/make`.
+The navbar's `/make/` link simply opens `https://app.shel.sh/make` in a new tab.
 **Hoist to Make**, beside Copy raw / Copy rich, instead opens the current exact
 source as a file in mk.it's existing share/download screen:
 
@@ -458,8 +462,10 @@ source as a file in mk.it's existing share/download screen:
 | JavaScript | `script.js` | `text/javascript` |
 | Plain text | `document.txt` | `text/plain` |
 
-The lazy adapter writes mk.it's unchanged `MKIT/1` metadata-and-bytes envelope,
-DEFLATEs it with the already-vendored pako and uses its existing `#share:` URL.
+Only on that button click, JavaScript writes mk.it's unchanged `MKIT/1` metadata-and-bytes envelope,
+DEFLATEs it with the already-vendored pako and opens its existing `#share:` URL
+in a new tab. No share payload is precomputed or embedded in the page. Both
+Make actions use `noopener noreferrer` and leave the current document open.
 UTF-8, line endings and whitespace are preserved. No upload, binary-file fetch,
 rendered toolbar export or codec change is involved. Like Copy raw, this keeps
 authored recipe/module pointers intact; it does not bake a rendered document

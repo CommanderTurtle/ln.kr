@@ -5,6 +5,7 @@ import {readingNavigationBootstrap} from '../docs/reading-nav.js';
 
 test('serialized preview controls and frame activation are executable JavaScript', () => {
   expect(() => new Function(previewAppearanceBootstrap())).not.toThrow();
+  expect(() => new Function(previewAppearanceBootstrap({mode:'light',token:'test-frame'}))).not.toThrow();
   expect(() => new Function(activateRepositoryFrames)).not.toThrow();
   expect(() => new Function(readingNavigationBootstrap())).not.toThrow();
 });

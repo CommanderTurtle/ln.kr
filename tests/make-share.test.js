@@ -29,6 +29,10 @@ test('Hoist preserves exact UTF-8 source and the text document type', () => {
 
 test('Make navigation is distinct from exact-source hoisting', async () => {
   const html = await Bun.file(new URL('../docs/index.html',import.meta.url)).text();
-  expect(html).toMatch(/>Link<\/button>\s*<a[^>]+href="https:\/\/app.shel.sh\/make">\/make\/<\/a>/);
+  expect(html).toMatch(/>Link<\/button>\s*<a[^>]+href="https:\/\/app.shel.sh\/make" target="_blank" rel="noopener noreferrer">\/make\/<\/a>/);
   expect(html).toMatch(/id="copy-rich"[^>]*>Copy rich<\/button>\s*<button id="hoist-make"/);
+  const main = await Bun.file(new URL('../docs/main.js',import.meta.url)).text();
+  const click = main.split('elements.hoistMake.addEventListener("click", () => {')[1].split('elements.copyJSFuck')[0];
+  expect(click).toContain("window.open(makeShareURL(text, kind), '_blank', 'noopener,noreferrer')");
+  expect(click).not.toMatch(/\bawait\s/);
 });
