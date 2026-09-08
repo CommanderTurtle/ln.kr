@@ -481,7 +481,7 @@ function inlineExtensions (container, state) {
   });
 
   const github = "https://github.com/CommanderTurtle/docs-pages";
-  replaceTextPattern(container, /(?<![\w/])([#!?])(\d+)\b/g, (match, document) => {
+  replaceTextPattern(container, /(?<![\w/])([!?])(\d+)\b/g, (match, document) => {
     const link = document.createElement("a");
     link.className = "magiclink";
     link.href = `${github}/${match[1] === "!" ? "pull" : match[1] === "?" ? "discussions" : "issues"}/${match[2]}`;
