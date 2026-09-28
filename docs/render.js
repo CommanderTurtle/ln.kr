@@ -4,6 +4,8 @@ import {
 } from "./zensical.js";
 import { installPreviewNavigation } from "./preview-navigation.js";
 import { installPreviewAppearance } from "./preview-appearance.js";
+import { parseCombinedMarkdown } from "./combined-markdown.js";
+import { createCombinedBrowser } from "./combined-view.js";
 
 let mermaidLoad = null;
 let mermaidReady = false;
@@ -378,8 +380,16 @@ export function renderCode (container, source, language = "text") {
   container.append(pre);
 }
 
-export async function renderContent (container, source, kind) {
+export async function renderContent (container, source, kind, options = {}) {
   if (kind === "markdown") {
+    const bundle = options.browseFiles === false ? null : parseCombinedMarkdown(source);
+    if (bundle) {
+      container.replaceChildren(createCombinedBrowser(bundle, source, async (host, entry) => {
+        if (["markdown", "md"].includes(entry.language) || /\.(md|markdown)$/i.test(entry.path)) await renderMarkdown(host, entry.text);
+        else renderCode(host, entry.text, entry.language);
+      }));
+      return;
+    }
     await renderMarkdown(container, source);
   } else {
     renderCode(container, source, kind);

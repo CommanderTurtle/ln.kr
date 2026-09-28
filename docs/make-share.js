@@ -1,14 +1,16 @@
 // mk.it's existing MKIT/1 file-share envelope (src/tools/share.ts), not a
 // second ln.kr codec. Loaded only when the user chooses Hoist to Make.
 import { deflate } from './vendor/pako.esm.min.js';
+import { parseCombinedMarkdown } from './combined-markdown.js';
 
 export function makeShareURL (text, kind, base = 'https://app.shel.sh/make/') {
-  const [name, mime] = ({
+  let [name, mime] = ({
     markdown: ['document.md', 'text/markdown'],
     html: ['document.html', 'text/html'],
     javascript: ['script.js', 'text/javascript'],
     text: ['document.txt', 'text/plain']
   })[kind] || ['document.txt', 'text/plain'];
+  if (kind === 'markdown' && parseCombinedMarkdown(text)) name = 'combined.md';
   const encoder = new TextEncoder();
   const metadata = encoder.encode(JSON.stringify({name, mime}));
   const content = encoder.encode(text);

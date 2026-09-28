@@ -20,6 +20,7 @@ import {
 import { decodeDocumentPayload } from "./payload.js";
 import { compressTextV1, compressTextV2, compressTextV3, compressTextV4, detectKind } from "./text-compress.js";
 import { renderContent, zensicalInteractionBootstrap } from "./render.js";
+import { parseCombinedMarkdown } from "./combined-markdown.js";
 import { previewNavigationBootstrap } from "./preview-navigation.js";
 import { hasRepositoryHeader, anchorRepositoryHeader, repositoryDocumentKind, createRepositoryRenderer, repositoryFrame, activateRepositoryFrames } from "./repo-render.js";
 import { decorateJekyllMarkdown } from "./repo-theme.js";
@@ -1092,6 +1093,7 @@ async function hydratePdfModules (container) {
 }
 
 function showViewer (decoded, payload, alphabet) {
+  const combined = decoded.kind === "markdown" && parseCombinedMarkdown(decoded.text);
   elements.previewAppearance.hidden = true;
   delete elements.preview.closest('.document-shell').dataset.lnkrScheme;
   hidePrimarySections();
@@ -1127,7 +1129,7 @@ function showViewer (decoded, payload, alphabet) {
       if (generation === renderGeneration) repositoryModules = true;
       if (prepared.kind === "html") return repositoryFrame(prepared.source);
       const node = document.createElement("article");
-      await renderContent(node, prepared.source, prepared.kind);
+      await renderContent(node, prepared.source, prepared.kind, { browseFiles: false });
       if (prepared.theme === 'jekyll') decorateJekyllMarkdown(node);
       return `<section class="preview lnkr-theme-${prepared.theme}" data-lnkr-appearance="dark">${node.innerHTML}</section>`;
     }
@@ -1138,11 +1140,11 @@ function showViewer (decoded, payload, alphabet) {
     expandModules: async (text, kind) => prepareResources((await expandSourceIncludes(text, { ...includeOptions, documentKind: kind })).text),
     renderMarkdown: async text => {
       const node = document.createElement("article");
-      await renderContent(node, await prepareResources(text), "markdown");
+      await renderContent(node, await prepareResources(text), "markdown", { browseFiles: false });
       return node.innerHTML;
     }
   });
-  currentRender = repositories.prepare(decoded.text, decoded.kind).then(async prepared => {
+  currentRender = (combined ? Promise.resolve(null) : repositories.prepare(decoded.text, decoded.kind)).then(async prepared => {
     if (generation !== renderGeneration) return null;
     currentRepositoryDocument = prepared;
     if (prepared) {
@@ -1152,10 +1154,10 @@ function showViewer (decoded, payload, alphabet) {
       elements.parentScope.checked = false;
       updateRunMode();
     }
-    return expandSourceIncludes(prepared?.source ?? decoded.text, includeOptions);
+    return combined ? { text: decoded.text } : expandSourceIncludes(prepared?.source ?? decoded.text, includeOptions);
   }).then(async expanded => {
     if (generation !== renderGeneration) return;
-    const runtime = await prepareResources(expanded.text);
+    const runtime = combined ? expanded.text : await prepareResources(expanded.text);
     if (generation !== renderGeneration) return;
     currentRuntimeSource = runtime;
     if (currentRepositoryDocument?.kind === "html") {
@@ -1285,10 +1287,19 @@ function decodeLocation () {
   }
 }
 
+async function documentMarkup () {
+  if (elements.preview.querySelector('.combined-browser')) {
+    const full = document.createElement('article');
+    await renderContent(full, currentRuntimeSource, currentRuntimeKind, { browseFiles: false });
+    return full.innerHTML;
+  }
+  return elements.preview.innerHTML;
+}
+
 async function copyRich () {
   if (!currentDocument) return;
   await currentRender;
-  const html = elements.preview.innerHTML;
+  const html = await documentMarkup();
   try {
     if (!window.ClipboardItem || !navigator.clipboard?.write) {
       throw new Error("Rich clipboard is unavailable");
@@ -1469,7 +1480,7 @@ async function runCurrentDocument ({ expand = false, scroll = true } = {}) {
       ? ""
       : `<meta http-equiv="Content-Security-Policy" content="${policy}">`;
     const bootstrap = `<script>${documentLinkBootstrap(runToken, true, appearance)}${repositoryModules ? `addEventListener('DOMContentLoaded',()=>{${activateRepositoryFrames}});` : ""}<\/script>`;
-    elements.runnerFrame.srcdoc = `<!doctype html><html><head>${meta}<style>${collectFrameStyles()}</style>${bootstrap}</head><body><article data-lnkr-appearance="${elements.preview.dataset.lnkrAppearance || 'dark'}" class="preview frame-preview${currentRepositoryDocument?.theme === "jekyll" ? " lnkr-theme-jekyll" : ""}">${elements.preview.innerHTML}</article></body></html>`;
+    elements.runnerFrame.srcdoc = `<!doctype html><html><head>${meta}<style>${collectFrameStyles()}</style>${bootstrap}</head><body><article data-lnkr-appearance="${elements.preview.dataset.lnkrAppearance || 'dark'}" class="preview frame-preview${currentRepositoryDocument?.theme === "jekyll" ? " lnkr-theme-jekyll" : ""}">${await documentMarkup()}</article></body></html>`;
     revealRunner({ expand, scroll });
     return;
   }
