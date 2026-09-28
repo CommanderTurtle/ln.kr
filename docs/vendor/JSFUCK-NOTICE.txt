@@ -1,0 +1,4 @@
+jsfuck as a dependency is included under the overarching project AGPLv3 License.
+The following copywrite, attribution, and notice are maintained for the dependency as follows:
+
+Copyright (C) 2012 Martin Kleppe <http://jsfuck.com>
