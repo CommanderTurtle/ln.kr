@@ -31,7 +31,7 @@ const defaultLimits = Object.freeze({
 });
 
 const sourceLineSlicePattern = /^(.*)::~(-?\d+)(?::(-?\d+))?$/s;
-const webURLCandidatePattern = /https?:\/\/[^\s"<>\u0060]+/gi;
+const webURLCandidatePattern = /https?:\/\/[^\s"<>\u0060]+|#[a-z]+:[^\s"<>\u0060]+/gi;
 
 function safeLineOffset (value) {
   const offset = Number(value);
@@ -69,7 +69,7 @@ function sourceLinkFromLine (line, appURL) {
 
   let url;
   try {
-    url = new URL(match[2]);
+    url = match[2].startsWith("#") ? new URL(match[2], appURL) : new URL(match[2]);
   } catch {
     return null;
   }
@@ -117,7 +117,7 @@ function decodedResolvedCandidate (raw, app, superlinks = false) {
       .replaceAll("&#X26;", "&");
     let url;
     try {
-      url = new URL(decodedCandidate);
+      url = new URL(decodedCandidate, app.href);
     } catch {
       continue;
     }
@@ -429,7 +429,7 @@ export async function expandSourceIncludes (source, {
           output.push(indentSource(prepared, include.indent) + include.ending);
           continue;
         }
-        const innerHref = extractSingleLinkDocument(outer.text);
+        const innerHref = extractSingleLinkDocument(outer.text, appURL);
         const inner = innerHref && sourceLinkFromLine(innerHref, appURL);
         if (!inner || !slicedSourceModes.has(inner.mode)) {
           throw new Error("A superlink must contain exactly one route-three or route-four source link");

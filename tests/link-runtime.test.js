@@ -91,6 +91,21 @@ describe("link routes", () => {
     expect(extractSingleLinkDocument(`<p>${target}</p>`)).toBe("");
   });
 
+  test("accepts a one-line hashtag route as a superlink document", () => {
+    const base = "https://a.shel.sh/";
+    expect(extractSingleLinkDocument("#s:payload", base)).toBe("https://a.shel.sh/#s:payload");
+    expect(extractSingleLinkDocument("#sm:payload", base)).toBe("https://a.shel.sh/#sm:payload");
+    expect(extractSingleLinkDocument("#ss:payload", base)).toBe("https://a.shel.sh/#ss:payload");
+    expect(extractSingleLinkDocument("#lr:payload", base)).toBe("https://a.shel.sh/#lr:payload");
+    expect(extractSingleLinkDocument("#m:payload", base)).toBe("https://a.shel.sh/#m:payload");
+    expect(extractSingleLinkDocument("#r:payload", base)).toBe("https://a.shel.sh/#r:payload");
+    expect(extractSingleLinkDocument("#h:payload", base)).toBe("https://a.shel.sh/#h:payload");
+    expect(extractSingleLinkDocument("#s:payload")).toBe("");
+    expect(extractSingleLinkDocument("#zz:payload", base)).toBe("");
+    expect(extractSingleLinkDocument("#s:payload\nmore", base)).toBe("");
+    expect(extractSingleLinkDocument("see #s:payload", base)).toBe("");
+  });
+
   test("selects official repository file endpoints entirely in-browser", () => {
     expect(sourceResourceURL(
       "https://github.com/CommanderTurtle/vox/blob/main/README.md"

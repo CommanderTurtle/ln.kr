@@ -160,7 +160,7 @@ export function createRepositoryRenderer ({ appURL, fetchImpl = globalThis.fetch
       const target = decodeLinkTarget(slice.payload).target;
       const record = await read(target, base, depth + 1);
       if (route.mode === "super-source" && !hasRepositoryHeader(record.source)) {
-        const inner = extractSingleLinkDocument(record.source);
+        const inner = extractSingleLinkDocument(record.source, appURL);
         // A raw pointer file may already have expanded to the document.
         if (!inner) return { ...record, source: applySourceLineSlice(record.source, slice.lineSlice) };
         return read(inner, record.url, depth + 1);

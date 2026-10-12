@@ -469,7 +469,7 @@ async function probeSuperlink (target, payload, generation) {
     });
     if (!response.ok || generation !== superlinkProbeGeneration) return;
     const source = await response.text();
-    const inner = extractSingleLinkDocument(source);
+    const inner = extractSingleLinkDocument(source, rootURL().href);
     if ((!inner && !hasRepositoryHeader(source)) || generation !== superlinkProbeGeneration) return;
     currentSuperLink = outputLinkURL(payload, "super-source");
     elements.copySuper.hidden = false;
@@ -573,7 +573,7 @@ async function showSuperLink (target, generation) {
       decodeLocation();
       return;
     }
-    const inner = extractSingleLinkDocument(source);
+    const inner = extractSingleLinkDocument(source, rootURL().href);
     if (!inner) throw new Error("The target is not an exact one-line link document");
     if (generation !== sourceResolveGeneration) return;
     window.location.replace(inner);

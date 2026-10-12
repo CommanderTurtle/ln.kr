@@ -4,6 +4,7 @@ import {
   outputAlphabetQR
 } from "./alphabets.js";
 import { compress, decompress } from "./compress.js";
+import { executablePrefixForKind } from "./viewer-runtime.js";
 
 const routePrefixes = Object.freeze([
   ["ss:", "super-source"],
@@ -19,6 +20,14 @@ const routePrefixes = Object.freeze([
   ["s:", "source"],
   ["l:", "guarded"]
 ]);
+
+const executableFragmentPrefixes = ["javascript", "markdown", "html"]
+  .map(kind => executablePrefixForKind(kind).slice(0, -1));
+
+const fragmentRoutePattern = new RegExp(
+  `^#(?:${[...routePrefixes.map(([prefix]) => prefix.slice(0, -1)), ...executableFragmentPrefixes].join("|")})\\S+$`,
+  "i"
+);
 
 const imageSuffixes = new Set([
   "apng", "avif", "bmp", "cur", "gif", "heic", "heif", "ico", "jfif",
@@ -263,9 +272,11 @@ function decodeLinkEntities (value) {
 
 /**
  * Read a deliberately tiny indirection file. It must contain exactly one
- * physical line: a bare web URL, one Markdown link, or one HTML anchor.
+ * physical line: a bare web URL, one Markdown link, one HTML anchor, or one
+ * shel/ln.kr fragment route (for example `#s:…`). A fragment route resolves
+ * against the supplied app base URL.
  */
-export function extractSingleLinkDocument (source) {
+export function extractSingleLinkDocument (source, baseURL = "") {
   const value = String(source).trim();
   if (!value || /[\r\n]/.test(value)) return "";
 
@@ -277,10 +288,18 @@ export function extractSingleLinkDocument (source) {
   if (!candidate) {
     candidate = value.match(/^\[[^\]]*\]\((https?:\/\/\S+)\)$/i)?.[1] || "";
   }
+  if (!candidate) {
+    candidate = fragmentRoutePattern.test(value) ? value : "";
+  }
   if (!candidate) return "";
 
   try {
-    return validateLinkTarget(decodeLinkEntities(candidate), { inferProtocol: false });
+    const decoded = decodeLinkEntities(candidate);
+    if (decoded.startsWith("#")) {
+      if (!baseURL) return "";
+      return new URL(decoded, baseURL).href;
+    }
+    return validateLinkTarget(decoded, { inferProtocol: false });
   } catch {
     return "";
   }
